@@ -8,4 +8,4 @@ MessageRole = Literal["user", "assistant", "system"]
 @dataclasses.dataclass
 class Message:
     role: MessageRole
-    content: str
+    content: List[dict] | str
