@@ -1,32 +1,27 @@
 from typing import List, Union
-from openai import OpenAI
 from abc import ABC
-from DAGAgent.utils.state import Message
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_openai import ChatOpenAI
 
 
 class LLM(ABC):
-    def __init__(self, api_key: str, api_base: str, api_version: str, deployment_name: str, max_tokens: int = 1024, temperature: float = 0.0):
-        self.client = AzureOpenAI(
-            api_key=api_key,
-            api_version=api_version,
-            azure_endpoint=api_base
+    def __init__(self, api_key: str, api_base: str,  deployment_name: str, max_tokens: int = 1024, temperature: float = 0.0):
+        self.llm = ChatOpenAI(
+            openai_api_key=api_key,
+            openai_api_base=api_base,
+            openai_api_version=api_version,
+            deployment_name=deployment_name,
+            max_tokens=max_tokens,
+            temperature=temperature
         )
-        self.deployment_name = deployment_name
-        self.max_tokens = max_tokens
-        self.temperature = temperature
+
         self.prompt_tokens = 0
         self.completion_tokens = 0
         
-    def chat(self, messages: List[Message]) -> str:
-        response = self.client.chat.completions.create(
-            model=self.deployment_name,
-            max_tokens=self.max_tokens,
-            messages=messages,
-            timeout=30,
-            temperature=self.temperature
-        )
+    def chat(self, messages: List[SystemMessage | HumanMessage]) -> str:
+        response = self.llm.invoke(messages)
 
-        self.prompt_tokens = response.usage.prompt_tokens
-        self.completion_tokens = response.usage.completion_tokens
+        self.prompt_tokens = response.usage_metadata["input_tokens"]
+        self.completion_tokens = response.usage_metadata["output_tokens"]
 
-        return response.choices[0].message.content
+        return response.content
