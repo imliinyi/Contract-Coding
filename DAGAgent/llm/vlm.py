@@ -23,10 +23,48 @@ class VLM(ABC):
             max_tokens=self.max_tokens,
             messages=messages,
             timeout=30,
-            temperature=self.temperature
+            temperature=self.temperature,
+            extra_headers={"X-TT-LOGID": ""}
         )
+
+        response = response.model_dump_json()
+        response = json.loads(response)
 
         self.prompt_tokens = response.usage.prompt_tokens
         self.completion_tokens = response.usage.completion_tokens
 
         return response.choices[0].message.content
+
+    def chat_with_json(self, messages: List[Message]) -> Message:
+        json_schema = {
+            "name": "message_schema",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "thinking": {"type": "string"},
+                    "output": {"type": "string"},
+                },
+                "required": ["thinking", "output"]
+            },
+            "strict": True,
+        }
+
+        response = self.client.chat.completions.create(
+            model=self.deployment_name,
+            max_tokens=self.max_tokens,
+            messages=messages,
+            timeout=30,
+            temperature=self.temperature,
+            extra_headers={"X-TT-LOGID": ""},
+            response_format={"type": "json_schema", "json_schema": json_schema}
+        )
+
+        response = response.model_dump_json()
+        response = json.loads(response)
+        response = response.choices[0].message.content
+        response = json.loads(response)
+
+        self.prompt_tokens = response.usage.prompt_tokens
+        self.completion_tokens = response.usage.completion_tokens
+
+        return Message(**response)
