@@ -30,4 +30,3 @@ class GeneralState(BaseModel):
     answer: str = Field(default="", description="The current answer given")
     message: Message = Field(default_factory=Message, description="The message of the agent")
     next_agents: Optional[Union[str, List[str]]] = Field(default_factory=list, description="The next agents to execute")
-    executed_agents: Dict[str, List[str]] = Field(default_factory=dict, description="The graph of executed agents")

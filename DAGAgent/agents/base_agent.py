@@ -2,7 +2,7 @@ import re
 import logging
 from typing import List, Dict
 
-from langgraph.graph import END
+from langgraph.graph import END, MessageGraph
 
 from DAGAgent.utils.state import Message
 from DAGAgent.llm.llm import LLM
@@ -42,6 +42,18 @@ class BaseAgent:
             logger.error(f"Error validating state: {e}")
             return False
 
+    @staticmethod
+    def get_prompt(sys_prompt: str, state: Message, next_available_agents: List[str], agent_details: Dict[str, str]) -> List[Message]:
+        avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" for agent_name in next_available_agents)
+        return [{
+                "role": "system", 
+                "content": [
+                    {"type": "text", "text": sys_prompt.format(avail_agents_datails=avail_agents_datails)}
+                    ]
+            },
+            {"role": "user", "content": [{"type": "text", "text": state.output}]}
+        ]
+
     def update_success_rate(self, success: bool) -> None:
         self.trails += 1
         if success:
@@ -52,11 +64,11 @@ class BaseAgent:
         if not last_message or not self.validate_state(last_message):
             return END
 
-        if 'FINAL_ANSWER:' in last_message.content.upper() or 'END' in last_message.content.upper():
+        if 'FINAL_ANSWER:' in last_message.output.upper() or 'END' in last_message.output.upper():
             return END
 
         comment_pattern = r'/\*.*?\*/'
-        comment_match = re.search(comment_pattern, last_message.content, re.DOTALL)
+        comment_match = re.search(comment_pattern, last_message.output, re.DOTALL)
         comment = comment_match.group(0) if comment_match else ''
         
         next_agents = []
@@ -84,7 +96,7 @@ class BaseAgent:
         is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
         return is_solved, feedback, state
 
-    def _execute_agent(self, state: Message | List[Message]) -> Message:
+    def _execute_agent(self, state: Message | List[Message], next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic.
 

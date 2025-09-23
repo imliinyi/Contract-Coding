@@ -4,10 +4,11 @@ import random
 import pickle
 import logging
 
+from langgraph.graph import END
 import numpy as np
 from datetime import datetime
 from abc import ABC
-from typing import List
+from typing import List, Dict
 from collections import defaultdict
 
 from DAGAgent.config import Config
@@ -34,6 +35,7 @@ class DesicionSpace(ABC):
         self.discount_factor = config.DISCOUNT_FACTOR
         self.epsilon = config.EPSILON
         self.entropy_weight = config.ENTROPY_WEIGHT
+        self.salaries = config.AGENT_SALARIES
         self.q_table_path = config.Q_TABLE_PATH
         self.q_table = defaultdict(dict)
 
@@ -57,6 +59,7 @@ class DesicionSpace(ABC):
         """
         Get the next available agents for the state.
         """
+        available_agents = set(available_agents)
         # Sorted by Q value
         sorted_by_q = sorted(self.q_table[state].items(), key=lambda x: x[1], reverse=True)
 
@@ -71,9 +74,45 @@ class DesicionSpace(ABC):
 
         random_node = []
         if random.random() < self.epsilon:
-            random_node.append(random.choice(available_nodes - best_nodes))
+            random_node.append(random.choice(available_agents - best_nodes))
 
         return random_node + (best_nodes if best_nodes else [])
+
+    def calculate_reward(self, current_state: str, action: str, path_len: int, success_rate: float) -> float:
+        """
+        Calculate the reward for the action.
+        """
+        if action == END:
+            path_penalty = max(0, self.config.MIN_PATH_LENGTH - path_len) * self.config.PATH_PENALTY
+            return self.config.SUCCESS_REWARD - path_penalty
+        else:
+            repeated_penalty = self.config.REPEATED_PENALTY if action == current_state else 0
+            executed_penalty = self.salaries[action] * self.config.BASE_SALARY_MULTIPLIER
+            success_reward = success_rate * self.config.SUCCESS_REWARD
+            return success_reward - executed_penalty - repeated_penalty
+
+    def calculate_group_reward(self, current_state: str, action_group: List[str], path_len: int, success_rates: List[float]) -> Dict[str, float]:
+        """
+        Calculate the reward for the action group.
+        """
+        rewards = {}
+        assert len(action_group) == len(success_rates), "Action group and success rates must have the same length"
+        for action, success_rate in zip(action_group, success_rates):
+            rewards[action] = self.calculate_reward(current_state, action, path_len, success_rate)
+
+        return rewards
+
+    def update_from_experience(self, experiences: List[Dict[str, List[str]]]) -> None:
+        """
+        Update the Q-table from the experiences.
+        """
+        for experience in experiences:
+            state = experience["state"]
+            action = experience["action"]
+            reward = experience["reward"]
+
+            self.q_table[state][action] += self.learning_rate * (reward + self.discount_factor * \
+                        max(self.q_table[action].values()) - self.q_table[state][action])
 
     def save_q_table(self, path: str = "q_table.pkl"):
         """

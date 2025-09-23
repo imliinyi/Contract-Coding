@@ -20,3 +20,8 @@ class MemoryManager:
         if len(self.memory) > self.memory_window:
             self.memory.pop(0)
         
+    def merge_memory(self, states: List[Message]) -> Message:
+        if not states:
+            return Message(role="system", content="")
+        memory = "\n".join([f"{state.role}: {state.content}" for state in states])
+        return Message(role="system", content=memory)
