@@ -1,8 +1,8 @@
 import re
 import logging
-from typing import List, Dict
 
-from langgraph.graph import END, MessageGraph
+from typing import List, Dict, Union
+from langgraph.graph import END
 
 from DAGAgent.utils.state import Message
 from DAGAgent.llm.llm import LLM
@@ -34,8 +34,8 @@ class BaseAgent:
             return False
         
         try:
-            if not state.content:
-                logger.error("State content is empty")
+            if not state.output:
+                logger.error("State output is empty")
                 return False
             return True
         except Exception as e:
@@ -43,8 +43,8 @@ class BaseAgent:
             return False
 
     @staticmethod
-    def get_prompt(sys_prompt: str, state: Message, next_available_agents: List[str], 
-                    agent_details: Dict[str, str]) -> List[Message]:
+    def get_prompt(sys_prompt: str, prompt: str, next_available_agents: List[str], 
+                    agent_details: Dict[str, str]) -> List[Dict[str, Union[str, List]]]:
         avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" 
                                 for agent_name in next_available_agents)
         return [{
@@ -53,7 +53,7 @@ class BaseAgent:
                     {"type": "text", "text": sys_prompt.format(avail_agents_datails=avail_agents_datails)}
                     ]
             },
-            {"role": "user", "content": [{"type": "text", "text": state.output}]}
+            {"role": "user", "content": [{"type": "text", "text": prompt}]}
         ]
 
     def update_success_rate(self) -> None:
@@ -99,7 +99,7 @@ class BaseAgent:
         is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
         return is_solved, feedback, state
 
-    def _execute_agent(self, state: Message | List[Message], test_cases: List[str], next_available_agents: List[str]) -> Message:
+    def _execute_agent(self, state: Message, test_cases: List[str], next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic.
 
