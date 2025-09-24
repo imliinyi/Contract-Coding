@@ -43,8 +43,10 @@ class BaseAgent:
             return False
 
     @staticmethod
-    def get_prompt(sys_prompt: str, state: Message, next_available_agents: List[str], agent_details: Dict[str, str]) -> List[Message]:
-        avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" for agent_name in next_available_agents)
+    def get_prompt(sys_prompt: str, state: Message, next_available_agents: List[str], 
+                    agent_details: Dict[str, str]) -> List[Message]:
+        avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" 
+                                for agent_name in next_available_agents)
         return [{
                 "role": "system", 
                 "content": [
@@ -54,11 +56,12 @@ class BaseAgent:
             {"role": "user", "content": [{"type": "text", "text": state.output}]}
         ]
 
-    def update_success_rate(self, success: bool) -> None:
-        self.trails += 1
-        if success:
-            self.success += 1
-            self.success_rate = self.success / self.trails if self.trails > 0 else self.success_rate
+    def update_success_rate(self) -> None:
+        """
+        Update the success rate of the agent.
+        """
+        self.success += 1
+        self.success_rate = self.success / self.trails if self.trails > 0 else self.success_rate
 
     def get_next_agents(self, last_message: Message) -> List[str] | str:
         if not last_message or not self.validate_state(last_message):
@@ -96,7 +99,7 @@ class BaseAgent:
         is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
         return is_solved, feedback, state
 
-    def _execute_agent(self, state: Message | List[Message], next_available_agents: List[str]) -> Message:
+    def _execute_agent(self, state: Message | List[Message], test_cases: List[str], next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic.
 

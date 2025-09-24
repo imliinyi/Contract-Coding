@@ -91,16 +91,26 @@ class DesicionSpace(ABC):
             success_reward = success_rate * self.config.SUCCESS_REWARD
             return success_reward - executed_penalty - repeated_penalty
 
-    def calculate_group_reward(self, current_state: str, action_group: List[str], path_len: int, success_rates: List[float]) -> Dict[str, float]:
+    def calculate_group_reward(self, current_state: str, action_group: List[str], 
+                    path_len: int, success_rates: List[float], learn_terminating_only: bool = False) -> Dict[str, float]:
         """
         Calculate the reward for the action group.
         """
         rewards = {}
         assert len(action_group) == len(success_rates), "Action group and success rates must have the same length"
         for action, success_rate in zip(action_group, success_rates):
+            if learn_terminating_only and action != END:
+                rewards[action] = -999
+                continue
             rewards[action] = self.calculate_reward(current_state, action, path_len, success_rate)
 
         return rewards
+
+    def decay_epsilon(self) -> None:
+        """
+        Decay epsilon.
+        """
+        self.epsilon *= self.config.EPSILON_DECAY
 
     def update_from_experience(self, experiences: List[Dict[str, List[str]]]) -> None:
         """
@@ -111,8 +121,9 @@ class DesicionSpace(ABC):
             action = experience["action"]
             reward = experience["reward"]
 
-            self.q_table[state][action] += self.learning_rate * (reward + self.discount_factor * \
-                        max(self.q_table[action].values()) - self.q_table[state][action])
+            if reward > -999:
+                self.q_table[state][action] += self.learning_rate * (reward + self.discount_factor * 
+                            max(self.q_table[action].values()) - self.q_table[state][action])
 
     def save_q_table(self, path: str = "q_table.pkl"):
         """
@@ -158,4 +169,5 @@ class DesicionSpace(ABC):
             reward = experience["reward"]
 
             if action in self.q_table[state]:
-                self.q_table[state][action] += self.learning_rate * (reward + self.discount_factor * max(self.q_table[action].values()) - self.q_table[state][action])
+                self.q_table[state][action] += self.learning_rate * (reward + 
+                    self.discount_factor * max(self.q_table[action].values()) - self.q_table[state][action])
