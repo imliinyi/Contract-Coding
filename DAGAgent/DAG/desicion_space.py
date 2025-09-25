@@ -64,19 +64,19 @@ class DesicionSpace(ABC):
         sorted_by_q = sorted(self.q_table[state].items(), key=lambda x: x[1], reverse=True)
 
         q_groups = defaultdict(list)
-        for node, q in sorted_by_q:
-            q_groups[q].append(node)
+        for agent, q in sorted_by_q:
+            q_groups[q].append(agent)
 
         top_two_q_values = list(q_groups.keys())[:2]
-        best_nodes = []
+        best_agents = []
         for q in top_two_q_values:
-            best_nodes.extend(q_groups[q])
+            best_agents.extend(q_groups[q])
 
-        random_node = []
+        random_agent = []
         if random.random() < self.epsilon:
-            random_node.append(random.choice(available_agents - best_nodes))
+            random_agent.append(random.choice(available_agents - best_agents))
 
-        return random_node + (best_nodes if best_nodes else [])
+        return random_agent + (best_agents if best_agents else [])
 
     def calculate_reward(self, current_state: str, action: str, path_len: int, success_rate: float) -> float:
         """

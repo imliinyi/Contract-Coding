@@ -1,5 +1,7 @@
-from typing import List
-from DAGAgent.utils.state import Message
+from ast import Dict
+from typing import List, Dict
+
+from DAGAgent.utils.state import Message, GeneralState
 from DAGAgent.llm.llm import LLM
 from DAGAgent.config import Config
 
@@ -14,18 +16,37 @@ class MemoryManager:
             temperature=config.OPENAI_API_TEMPERATURE,
         )
         self.memory_window = memory_window
-        self.memory: List[Message] = []
+        self.memory: Dict[str, List[Message]] = {}
 
-    def add_message(self, message: Message):
-        self.memory.append(message)
-        if len(self.memory) > self.memory_window:
-            self.memory.pop(0)
+    def add_message(self, agent_name: str, message: Message):
+        """
+        Adds a message to the memory of the specified agent.
+        """
+        if agent_name not in self.memory:
+            self.memory[agent_name] = []
+        self.memory[agent_name].append(message)
+        if len(self.memory[agent_name]) > self.memory_window:
+            self.memory[agent_name].pop(0)
 
-    def format_message(self, message: Message, task: str) -> str:
+    def transfer_message(self, task: str, code: str, 
+                        answer: str, message: Message, next_agents: List[str]) -> GeneralState:
+        """
+        Transfers a message from one agent to the next, updating the task, code, answer, and next_agents.
+        """
+        return GeneralState(
+                message=message, 
+                task=task, 
+                code=code, 
+                answer=answer, 
+                next_agents=next_agents
+            )
+
+    def format_state(self, state: GeneralState) -> str:
         """
         Formats a message for the LLM, including the task and the message content.
         """
         thinking_section = ""
+        message = state.message
         if message.thinking:
             thinking_section = f"""
                 ### Previous Agent's Thought:
@@ -50,10 +71,10 @@ class MemoryManager:
             {output_section}\n
             ---\n
             ### Your Task:
-            {task}
+            {state.task}
         """
         
-    def merge_memory(self, states: List[Message]) -> Message:
+    def merge_message(self, states: List[Message]) -> Message:
         """
         Merges a list of messages from multiple upstream agents into
          a single message.
@@ -87,3 +108,43 @@ class MemoryManager:
         # The merged message represents the combined input for the next agent.
         # The role is 'user' as it serves as the prompt/input for the next step.
         return Message(role="system", thinking=merged_thinking, output=merged_output)   
+
+    def merge_memory(self, states: List[GeneralState]) -> GeneralState:
+        """
+        Merges a list of states from multiple upstream agents into
+         a single state.
+        """
+        if not states:
+            # If no states are provided, return an empty state
+            return GeneralState(
+                    message=Message(role="system", thinking="", output=""), 
+                    task="", 
+                    code="", 
+                    answer="", 
+                    next_agents=[]
+                )
+        
+        if len(states) == 1:
+            # If only one state is provided, return it as is
+            return states[0]
+
+        merged_messages = self.merge_message([state.message for state in states])
+
+        separator = "\n\n" + "="*20 + " MERGED INPUT " + "="*20 + "\n\n"
+        merged_code = separator.join(
+            f"# Code from Upstream Agent {i + 1}:\n{state.code}"
+            for i, state in enumerate(states) if state.code
+        )
+        merged_answer = separator.join(
+            f"# Answer from Upstream Agent {i + 1}:\n{state.answer}"
+            for i, state in enumerate(states) if state.answer
+        )
+
+        # Create a new state with the merged message and code/answer
+        return GeneralState(
+            task=states[0].task,  # Assuming task is the same for all states
+            code=merged_code,
+            answer=merged_answer,
+            message=merged_messages,
+            next_agents=states[0].next_agents  # Assuming next_agents are the same for all states
+        )

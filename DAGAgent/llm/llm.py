@@ -1,5 +1,5 @@
 from re import S
-from typing import List, Union
+from typing import Dict, List, Union
 from abc import ABC
 
 from openai import OpenAI
@@ -33,7 +33,7 @@ class LLM(ABC):
         self.prompt_tokens = 0
         self.completion_tokens = 0
         
-    def chat(self, messages: List[Message]) -> str:
+    def chat(self, messages: Dict) -> str:
         response = self.client.chat.completions.create(
             model=self.deployment_name,
             max_tokens=self.max_tokens,

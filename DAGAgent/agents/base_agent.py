@@ -6,6 +6,7 @@ from langgraph.graph import END
 
 from DAGAgent.utils.state import Message
 from DAGAgent.llm.llm import LLM
+from DAGAgent.prompt.system_prompt import SYSTEM_PROMPT, AGENT_PROMPT
 from DAGAgent.config import Config
 from DAGAgent.utils.coding.python_executor import PyExecutor
 
@@ -41,6 +42,20 @@ class BaseAgent:
         except Exception as e:
             logger.error(f"Error validating state: {e}")
             return False
+
+    @staticmethod
+    def get_system_prompt() -> str:
+        """
+        Get the system prompt for the agent.
+        """
+        return SYSTEM_PROMPT
+
+    @staticmethod
+    def get_agent_prompt(agent_name: str) -> str:
+        """
+        Get the agent prompt for the agent.
+        """
+        return AGENT_PROMPT.get(agent_name, '')
 
     @staticmethod
     def get_prompt(sys_prompt: str, prompt: str, next_available_agents: List[str], 
