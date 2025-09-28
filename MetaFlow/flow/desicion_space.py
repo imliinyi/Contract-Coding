@@ -47,6 +47,27 @@ class DesicionSpace(ABC):
         if os.path.exists(self.q_table_path):
             self.load_q_table(self.q_table_path)
 
+    def add_new_action(self, state: str, action: str, enrty_action: str) -> None:
+        """
+        Add a new action to the Q-table for all states.
+        """
+        # For the given state, initialize with the value of the entry action
+        if state in self.q_table:
+            initial_q_value = self.q_table[state].get(enrty_action, 0)
+            self.q_table[state][action] = initial_q_value
+
+        # For all other states, initialize with the average Q-value of existing actions
+        for s in self.q_table:
+            if s != state:
+                if self.q_table[s]:
+                    avg_q_value = sum(self.q_table[s].values()) / len(self.q_table[s])
+                    self.q_table[s][action] = avg_q_value
+                else:
+                    self.q_table[s][action] = 0
+        
+        if action not in self.q_table:
+            self.q_table[action] = {}
+
     def get_available_agents(self, state: str) -> List[str]:
         """
         Get the available agents for the state.

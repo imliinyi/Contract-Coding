@@ -16,10 +16,8 @@ from MetaFlow.utils.math.get_predict import get_predict
 logger = logging.getLogger(__name__)
 
 
-class DynaFlow:
-    """
-    DynaFlow class for the DAGAgent.
-    """
+class MetaFlow:
+    
     def __init__(self, config: Config):
         self.config = config
         self.memory_manager = MemoryManager(self.config, self.config.MEMORY_WINDOW)
