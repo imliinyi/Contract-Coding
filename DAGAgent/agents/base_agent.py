@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Union
 from langgraph.graph import END
 
-from DAGAgent.utils.state import Message
+from DAGAgent.utils.state import Message, GeneralState
 from DAGAgent.llm.llm import LLM
 from DAGAgent.prompt.system_prompt import SYSTEM_PROMPT, AGENT_PROMPT
 from DAGAgent.config import Config
@@ -21,7 +21,7 @@ class BaseAgent:
         self.agent_name = agent_name
         self.config = config
         self.llm = LLM(self.config)
-        self.salaries : Dict[str, float] = self.config.get('salaries', {})
+        self.salaries : Dict[str, float] = self.config.AGENT_SALARIES
 
         self.success = 0
         self.trails = 0
@@ -71,6 +71,21 @@ class BaseAgent:
             {"role": "user", "content": [{"type": "text", "text": prompt}]}
         ]
 
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
+        """
+        Executes the agent's logic.
+
+        This method can receive a single GeneralState or a list of GeneralState objects, depending on the number of
+        predecessor nodes in the graph. Subclasses should implement the logic to handle both cases.
+
+        Args:
+            state: A Message object or a list of Message objects from predecessor agents.
+
+        Returns:
+            A Message object representing the output of the agent.
+        """
+        raise NotImplementedError("This method should be implemented by subclass")
+
     def update_success_rate(self) -> None:
         """
         Update the success rate of the agent.
@@ -114,19 +129,5 @@ class BaseAgent:
         is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
         return is_solved, feedback, state
 
-    def _execute_agent(self, state: Message, test_cases: List[str], next_available_agents: List[str]) -> Message:
-        """
-        Executes the agent's logic.
-
-        This method can receive a single Message or a list of Messages, depending on the number of
-        predecessor nodes in the graph. Subclasses should implement the logic to handle both cases.
-
-        Args:
-            state: A Message object or a list of Message objects from predecessor agents.
-
-        Returns:
-            A Message object representing the output of the agent.
-        """
-        raise NotImplementedError("This method should be implemented by subclass")
 
     

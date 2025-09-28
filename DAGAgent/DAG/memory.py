@@ -7,7 +7,7 @@ from DAGAgent.config import Config
 
 
 class MemoryManager:
-    def __init__(self, config: Config, memory_window: int):
+    def __init__(self, config: Config, memory_window: int=5):
         self.llm = LLM(
             deployment_name=config.OPENAI_API_DEPLOYMENT_NAME,
             api_key=config.OPENAI_API_KEY,

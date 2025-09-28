@@ -20,10 +20,9 @@ class DynaFlow:
     """
     DynaFlow class for the DAGAgent.
     """
-    def __init__(self, config: Config, memory_window: int):
+    def __init__(self, config: Config):
         self.config = config
-        self.memory_window = memory_window
-        self.memory_manager = MemoryManager(self.config, self.memory_window)
+        self.memory_manager = MemoryManager(self.config, self.config.MEMORY_WINDOW)
         self.decision_space: Optional[DesicionSpace] = None
         self.termination_policy = self.config.TERMINATION_POLICY
         # self.max_workers = self.config.MAX_WORKERS
@@ -236,7 +235,7 @@ class DynaFlow:
         self.decision_space.save_q_table()
         self._update_agents_success_rate(execution_trace)
         
-    def _parse_agent_output(self, next_agents: Any) -> (List[str], bool):
+    def _parse_agent_output(self, next_agents: Any) -> Tuple[List[str], bool]:
         """
         Parse the output of an agent to determine the next agents to continue with.
         Returns a tuple of (next_agents, is_terminating).
