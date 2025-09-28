@@ -1,9 +1,11 @@
 """
 Configuration file for the DAGAgent.
 """
+from pydantic import BaseModel
 
-class Config:
-    # MainAgent
+
+class Config(BaseModel):
+    # DAGAgent
     MAX_RETRY = 3
     MIN_REWARD = -50
     SUCCESS_REWARD = 100
@@ -14,6 +16,7 @@ class Config:
     NODE_PENALTY = 10
     REPEATED_PENALTY = 10
     ALL_EXPLORE = 50
+    TERMINATION_POLICY = "Any"
 
     # Q-Learning
     LEARNING_RATE = 0.1

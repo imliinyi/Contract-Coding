@@ -1,7 +1,7 @@
 from typing import List, Union
 from openai import AzureOpenAI
 from abc import ABC
-from DAGAgent.utils.state import Message
+from MetaFlow.utils.state import Message
 
 
 class VLM(ABC):

@@ -11,7 +11,7 @@ from abc import ABC
 from typing import List, Dict
 from collections import defaultdict
 
-from DAGAgent.config import Config
+from MetaFlow.config import Config
 
 
 logging.basicConfig(

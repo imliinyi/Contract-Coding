@@ -4,12 +4,12 @@ from pydantic import BaseModel
 from typing import List, Dict
 from collections import defaultdict
 
-from DAGAgent.agents.base_agent import BaseAgent
-from DAGAgent.DAG.memory import MemoryManager
-from DAGAgent.config import Config
-from DAGAgent.utils.state import Message, GeneralState
-from DAGAgent.utils.coding.python_executor import execute_code_get_return
-from DAGAgent.utils.math.get_predict import get_predict
+from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.flow.memory import MemoryManager
+from MetaFlow.config import Config
+from MetaFlow.utils.state import Message, GeneralState
+from MetaFlow.utils.coding.python_executor import execute_code_get_return
+from MetaFlow.utils.math.get_predict import get_predict
 
 
 class CompositeGraph(BaseModel):
