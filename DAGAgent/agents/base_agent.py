@@ -20,7 +20,11 @@ class BaseAgent:
     def __init__(self, agent_name: str, config: Config):
         self.agent_name = agent_name
         self.config = config
-        self.llm = LLM(self.config)
+        self.llm = LLM(self.config.OPENAI_API_DEPLOYMENT_NAME,
+                       self.config.OPENAI_API_KEY,
+                       self.config.OPENAI_API_BASE_URL,
+                       self.config.OPENAI_API_MAX_TOKENS,
+                       self.config.OPENAI_API_TEMPERATURE)
         self.salaries : Dict[str, float] = self.config.AGENT_SALARIES
 
         self.success = 0
