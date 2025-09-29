@@ -1,7 +1,9 @@
 import re
+import json
 import logging
+from abc import ABC, abstractmethod, staticmethod
+from typing import List, Dict, Union, Optional
 
-from typing import List, Dict, Union
 from langgraph.graph import END
 
 from MetaFlow.utils.state import Message, GeneralState
@@ -13,19 +15,22 @@ from MetaFlow.utils.coding.python_executor import PyExecutor
 
 logger = logging.getLogger(__name__)
 
-class BaseAgent:
+class BaseAgent(ABC):
     """
-    BaseAgent class for the DAGAgent.
+    Abstract BaseAgent class for the DAGAgent.
+    It defines the common interface for all agents.
     """
     def __init__(self, agent_name: str, config: Config):
         self.agent_name = agent_name
         self.config = config
-        self.llm = LLM(self.config.OPENAI_API_DEPLOYMENT_NAME,
-                       self.config.OPENAI_API_KEY,
-                       self.config.OPENAI_API_BASE_URL,
-                       self.config.OPENAI_API_MAX_TOKENS,
-                       self.config.OPENAI_API_TEMPERATURE)
-        self.salaries : Dict[str, float] = self.config.AGENT_SALARIES
+        self.llm = LLM(
+            api_key=self.config.OPENAI_API_KEY,
+            api_base=self.config.OPENAI_API_BASE_URL,
+            deployment_name=self.config.OPENAI_API_DEPLOYMENT_NAME,
+            max_tokens=self.config.OPENAI_API_MAX_TOKENS,
+            temperature=self.config.OPENAI_API_TEMPERATURE
+        )
+        self.salaries: Dict[str, float] = self.config.AGENT_SALARIES
 
         self.success = 0
         self.trails = 0
@@ -62,14 +67,15 @@ class BaseAgent:
         return AGENT_PROMPT.get(agent_name, '')
 
     @staticmethod
-    def get_prompt(sys_prompt: str, prompt: str, next_available_agents: List[str], 
+    def get_prompt(sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str], 
                     agent_details: Dict[str, str]) -> List[Dict[str, Union[str, List]]]:
         avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" 
                                 for agent_name in next_available_agents)
         return [{
                 "role": "system", 
                 "content": [
-                    {"type": "text", "text": sys_prompt.format(avail_agents_datails=avail_agents_datails)}
+                    {"type": "text", "text": sys_prompt.format(avail_agents_datails=avail_agents_datails)},
+                    {"type": "text", "text": agent_prompt},
                     ]
             },
             {"role": "user", "content": [{"type": "text", "text": prompt}]}
@@ -77,18 +83,37 @@ class BaseAgent:
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
         """
-        Executes the agent's logic.
-
-        This method can receive a single GeneralState or a list of GeneralState objects, depending on the number of
-        predecessor nodes in the graph. Subclasses should implement the logic to handle both cases.
-
-        Args:
-            state: A Message object or a list of Message objects from predecessor agents.
-
-        Returns:
-            A Message object representing the output of the agent.
+        Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
-        raise NotImplementedError("This method should be implemented by subclass")
+        raise NotImplementedError("This method should be implemented by a subclass.")
+
+    def get_next_agents(self, last_message: Message) -> Optional[List[str]]:
+        """
+        Parses the structured JSON from the LLM's output to determine the next agents.
+        """
+        if not last_message or not last_message.output:
+            return [END]
+
+        json_pattern = r'```json\n(.*?)\n```'
+        match = re.search(json_pattern, last_message.output, re.DOTALL)
+
+        if not match:
+            # Fallback or error handling if JSON block is not found
+            if "FINAL_ANSWER" in last_message.output.upper() or "THE TASK IS COMPLETE" in last_message.output.upper():
+                return [END]
+            return None # Indicates uncertainty, letting the flow decide
+
+        try:
+            decision_json = json.loads(match.group(1))
+            next_agents = decision_json.get("next_agents")
+
+            if not next_agents or not isinstance(next_agents, list):
+                return [END] # Default to ending if the format is incorrect
+
+            return next_agents
+        except (json.JSONDecodeError, AttributeError):
+            logger.error("Failed to decode JSON from agent output.")
+            return [END] # Default to ending on parsing failure
 
     def update_success_rate(self) -> None:
         """
@@ -96,24 +121,6 @@ class BaseAgent:
         """
         self.success += 1
         self.success_rate = self.success / self.trails if self.trails > 0 else self.success_rate
-
-    def get_next_agents(self, last_message: Message) -> List[str] | str:
-        if not last_message or not self.validate_state(last_message):
-            return END
-
-        if 'FINAL_ANSWER:' in last_message.output.upper() or 'END' in last_message.output.upper():
-            return END
-
-        comment_pattern = r'/\*.*?\*/'
-        comment_match = re.search(comment_pattern, last_message.output, re.DOTALL)
-        comment = comment_match.group(0) if comment_match else ''
-        
-        next_agents = []
-        for agent in self.salaries.keys():
-            if agent.upper() in comment.upper():
-                next_agents.append(agent)
-
-        return next_agents if not next_agents else END
 
     def extract_example(self, prompt: str) -> str:
         lines = (line.strip() for line in prompt.split('\n') if line.strip())

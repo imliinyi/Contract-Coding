@@ -44,14 +44,14 @@ class Reflector:
         1. Analyze this dependency graph and identify the most core, reusable, and fully functional subgraph patterns.
         2. Give this subgraph pattern a concise and expressive 'skill_name'.
         3. Briefly describe the function of this skill (description).
-        4. Define the subgraph structure (sub-workflow_graph) of this new skill in the form of an edge list. The entry node of the subgraph should be named 'Start'.
+        4. Define the subgraph structure (sub_graph) of this new skill in the form of an edge list. The entry node of the subgraph should be named 'START'.
 
         [Your output]
         Please output strictly in JSON format and do not include any other explanations. For example:
         {{
         "skill_name": "DebugLoopAgent",
         "description": "A debugging loop skill that automatically writes code, tests, and fixes based on feedback.",
-        "sub_workflow_graph": [["Start", "CodeAgent"], ["CodeAgent", "TestAgent"], ["TestAgent", "CodeAgent"]]
+        "sub_graph": [["START", "CodeAgent"], ["CodeAgent", "TestAgent"], ["TestAgent", "CodeAgent"]]
         }}
         """
         return prompt
