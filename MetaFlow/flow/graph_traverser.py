@@ -9,7 +9,7 @@ from MetaFlow.config import Config
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.flow.memory import MemoryManager
-from MetaFlow.flow.desicion_space import DesicionSpace
+from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.utils.state import GeneralState
 
 
@@ -18,7 +18,7 @@ class GraphTraverser:
         self,
         config: Config,
         agents: Dict[str, BaseAgent],
-        decision_space: DesicionSpace,
+        decision_space: DecisionSpace,
         agent_runner: AgentRunner,
         memory_manager: MemoryManager,
     ):
@@ -27,6 +27,65 @@ class GraphTraverser:
         self.decision_space = decision_space
         self.agent_runner = agent_runner
         self.memory_manager = memory_manager
+
+    def sub_traverse(
+        self,
+        sub_graph: List[Dict[str, str]],
+        initial_states: GeneralState,
+        test_cases: List[str],
+    ) -> Tuple[List[Dict[str, GeneralState]], List[Tuple[str, str, float]], List[GeneralState]]:
+        """
+        Forward propagation through the layers of the graph.
+        """
+        execution_trace: List[Dict[str, str, float]] = []
+        all_layers: List[Dict[str, GeneralState]] = []
+        terminating_states: List[GeneralState] = []
+
+        # Build the forward graph
+        forward_graph = defaultdict(list)
+        for u, v in sub_graph:
+            forward_graph[u].append(v)
+
+        entry_points = forward_graph.get('START', [])
+        if not entry_points:
+            return [], [], []
+
+        current_layer_states = {agent_name: initial_states for agent_name in set(entry_points)}
+        executed_layers = 0
+
+        while current_layer_states and executed_layers < self.config.MAX_LAYERS:
+            all_layers.append(current_layer_states)
+            executed_layers += 1
+            next_layer_inputs = defaultdict(list)
+
+            for agent_name, input_state in current_layer_states.items():
+                output_state = self.agent_runner.run(
+                    agent_name=agent_name, 
+                    state=input_state, 
+                    test_cases=test_cases, 
+                    next_available_agents=[])
+                successors = forward_graph.get(agent_name, [])
+                for successor in successors:
+                    # Record the execution trace
+                    execution_trace.append((agent_name, successor, 0.0))
+
+                    if successor == END:
+                        terminating_states.append(output_state)
+                    else:
+                        # Collect the output state for the successor agent
+                        next_layer_inputs[successor].append(output_state)
+
+            next_layer_states = {}
+            for agent_name, states in next_layer_inputs.items():
+                if len(states) > 1:
+                    merged_state = self.memory_manager.merge_memory(states)
+                    next_layer_states[agent_name] = merged_state
+                else:
+                    next_layer_states[agent_name] = states[0]
+
+            current_layer_states = next_layer_states
+
+        return all_layers, execution_trace, terminating_states
 
     def traverse(
         self, start_agent: str, initial_states: Dict[str, GeneralState], test_cases: List[str]

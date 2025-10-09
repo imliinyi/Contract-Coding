@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, List, Tuple
 from langgraph.graph import END
 
 from MetaFlow.flow.memory import MemoryManager
-from MetaFlow.flow.desicion_space import DesicionSpace
+from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.flow.composite_graph import CompositeGraph, CompositeAgent
 from MetaFlow.flow.graph_traverser import GraphTraverser
 from MetaFlow.flow.agent_runner import AgentRunner
@@ -30,7 +30,7 @@ class MetaFlow:
         self.termination_policy = self.config.TERMINATION_POLICY
 
         self.memory_manager = MemoryManager(self.config, self.config.MEMORY_WINDOW)
-        self.decision_space: Optional[DesicionSpace] = None
+        self.decision_space: Optional[DecisionSpace] = None
         self.agent_runner: Optional[AgentRunner] = AgentRunner(self.agents)
         self.graph_traverser: Optional[GraphTraverser] = None
         self.learner: Optional[Learner] = None
@@ -68,7 +68,7 @@ class MetaFlow:
 
     def _run_single_step(self, input: str, test_cases: List[str] = []) -> Tuple[GeneralState, bool]:
         """
-        Run a single step of the DAGAgent.
+        Run a single step of the MetaFlow.
         """
         initial_state = self._initialize_state(input)
         
@@ -98,19 +98,18 @@ class MetaFlow:
             graph[u].append(v)
         return dict(graph)
 
-    def reflect_and_learn(self, trace_graph: List[Tuple[str, str]], executed_layers: List[frozenset]) -> None:
+    def reflect_and_learn(self, execution_trace: List[Tuple[str, str, float]], all_layers: List[Dict[str, GeneralState]]) -> None:
         """
-        Reflect and learn from the trace graph.
+        Reflect and learn from the execution trace.
         """
-        is_reflect = check_layer_revisit(executed_layers) or \
-                     check_long_path(executed_layers, self.config.PATH_THRESHOLD)
+        is_reflect = check_layer_revisit(all_layers) or \
+                     check_long_path(all_layers, self.config.PATH_THRESHOLD)
 
         if not is_reflect:
             return # No need to reflect
 
-        # Convert trace_graph to edge list format
-        trace_structure = [(u, v) for u, v, _ in trace_graph]
-        new_skill = self.reflector.abstract_skill(trace_structure)
+        # The reflector now takes the full execution history to build a rich representation
+        new_skill = self.reflector.abstract_skill(all_layers, execution_trace)
         if not new_skill or not new_skill.get('skill_name'):
             return  # No new skill to learn
 
@@ -121,14 +120,16 @@ class MetaFlow:
         composite_agent = CompositeAgent(
             agent_name=skill_name,
             config=self.config,
-            sub_graph=self._convert_to_graph(new_skill['sub_graph']),
+            decision_space=self.decision_space,
+            sub_graph=new_skill['sub_graph'],
             agents=self.agents,
         )
         self.register_agent(skill_name, composite_agent)
 
         # Add the new skill to the decision space
-        entry_point = new_skill['sub_graph'][0][0]
-        self.decision_space.add_new_action(entry_point, skill_name, entry_point)
+        state = new_skill['sub_graph'][0][1]
+        entry_point = new_skill['skill_name']
+        self.decision_space.add_new_action(state, skill_name, entry_point)
         
     def register_agent(self, agent_name: str, agent: BaseAgent, is_start: bool = False) -> None:
         self.agents[agent_name] = agent
@@ -137,7 +138,7 @@ class MetaFlow:
 
     def train(self, inputs: List[str], test_cases: List[List[str]]) -> List[Dict[str, Any]]:
         """
-        Train the DAGAgent on the given inputs and test cases.
+        Train the MetaFlow on the given inputs and test cases.
         """
         self.is_train = True
         assert len(inputs) == len(test_cases), "Number of inputs must match number of test cases."
@@ -160,7 +161,7 @@ class MetaFlow:
 
     def run(self, input_task: str, test_cases: List[str]) -> str:
         """
-        Run the DAGAgent on the given input task and test cases.
+        Run the MetaFlow on the given input task and test cases.
         """
         self.is_train = False
         final_state, is_success = self._run_single_step(input_task, test_cases)

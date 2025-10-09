@@ -23,7 +23,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-class DesicionSpace(ABC):
+class DecisionSpace(ABC):
     """
     DecisionSpace is a class that represents the decision space of the DAGAgent.
     """
@@ -47,26 +47,24 @@ class DesicionSpace(ABC):
         if os.path.exists(self.q_table_path):
             self.load_q_table(self.q_table_path)
 
-    def add_new_action(self, state: str, action: str, entry_action: str) -> None:
+    def add_new_action(self, state: str, action: str) -> None:
         """
-        Add a new action to the Q-table for all states.
+        Adds a new action to all states in the Q-table, initializing with entry action's values.
         """
-        # For the given state, initialize with the value of the entry action
-        if state in self.q_table:
-            initial_q_value = self.q_table[state].get(entry_action, 0)
-            self.q_table[state][action] = initial_q_value
-
-        # For all other states, initialize with the average Q-value of existing actions
-        for s in self.q_table:
-            if s != state:
-                if self.q_table[s]:
-                    avg_q_value = sum(self.q_table[s].values()) / len(self.q_table[s])
-                    self.q_table[s][action] = avg_q_value
+        for state_name, actions in self.q_table.items():
+            if action not in actions:
+                if actions:
+                    # avg_values = sum(actions.values()) / len(actions)
+                    # self.q_table[state_name][action] = avg_values
+                    self.q_table[state_name][action] = self.q_table[state_name][state]
                 else:
-                    self.q_table[s][action] = 0
-        
-        if action not in self.q_table:
-            self.q_table[action] = {}
+                    self.q_table[state_name][action] = 0
+
+        # For the new action, initialize with the average Q-value of existing actions
+        if action not in self.q_table.keys():
+            self.q_table[action] = {
+                a: 0 for a in self.agents if a != action
+            }
 
     def get_available_agents(self, state: str) -> List[str]:
         """

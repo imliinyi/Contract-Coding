@@ -81,6 +81,7 @@ class BaseAgent(ABC):
             {"role": "user", "content": [{"type": "text", "text": prompt}]}
         ]
 
+    @abstractmethod
     def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
@@ -99,9 +100,9 @@ class BaseAgent(ABC):
 
         if not match:
             # Fallback or error handling if JSON block is not found
-            if "FINAL_ANSWER" in last_message.output.upper() or "THE TASK IS COMPLETE" in last_message.output.upper():
+            if "FINAL_ANSWER" in last_message.output.upper() or END in last_message.output.upper():
                 return [END]
-            return None # Indicates uncertainty, letting the flow decide
+            return [END] # Indicates uncertainty, letting the flow decide
 
         try:
             decision_json = json.loads(match.group(1))

@@ -3,12 +3,12 @@ from typing import Any, Dict, List, Tuple
 
 from MetaFlow.config import Config
 from MetaFlow.agents.base_agent import BaseAgent
-from MetaFlow.flow.desicion_space import DesicionSpace
+from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.utils.state import GeneralState
 
 
 class Learner:
-    def __init__(self, config: Config, decision_space: DesicionSpace, agents: Dict[str, BaseAgent]):
+    def __init__(self, config: Config, decision_space: DecisionSpace, agents: Dict[str, BaseAgent]):
         self.config = config
         self.decision_space = decision_space
         self.agents = agents
@@ -34,9 +34,8 @@ class Learner:
 
         experiences = []
         for source_agent, target_agent, reward in execution_trace:
-            # Here we use the calculated state_value for more accurate learning
-            # future_reward = self.decision_space.discount_factor * state_values[target_agent]
-            # total_reward = reward + future_reward
+            # The DecisionSpace is responsible for the full Bellman update.
+            # We only pass the immediate reward from the experience.
             experiences.append({
                 "state": source_agent,
                 "action": target_agent,

@@ -3,7 +3,7 @@ from typing import List, Dict, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.utils.state import GeneralState, Message
-from MetaFlow.prompt.system_prompt import SYSTEM_PROMPT, AGENT_PROMPT
+from MetaFlow.prompt.system_prompt import SYSTEM_PROMPT, AGENT_PROMPT, AGENT_DETAILS
 from MetaFlow.config import Config
 
 
@@ -19,15 +19,14 @@ class LLMAgent(BaseAgent):
         """
         A generic implementation that executes the agent's logic by calling the LLM.
         """
-        agent_prompt = AGENT_PROMPT.get(self.agent_name, "You are a helpful assistant.")
         task_description = f"User Task: {state.task}"
 
         inputs = self.get_prompt(
-            sys_prompt=SYSTEM_PROMPT, 
-            agent_prompt=agent_prompt,
+            sys_prompt=self.get_system_prompt(), 
+            agent_prompt=self.get_agent_prompt(self.agent_name),
             prompt=task_description, 
             next_available_agents=next_available_agents, 
-            agent_details=AGENT_PROMPT,
+            agent_details=AGENT_DETAILS,
         )
 
         response_text = self.llm.chat(inputs)

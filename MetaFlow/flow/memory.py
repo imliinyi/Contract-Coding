@@ -9,7 +9,7 @@ from MetaFlow.config import Config
 class MemoryManager:
     def __init__(self, config: Config, memory_window: int=5):
         self.llm = LLM(
-            deployment_name=config.OPENAI_API_DEPLOYMENT_NAME,
+            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
             api_key=config.OPENAI_API_KEY,
             base_url=config.OPENAI_API_BASE_URL,
             max_tokens=config.OPENAI_API_MAX_TOKENS,
