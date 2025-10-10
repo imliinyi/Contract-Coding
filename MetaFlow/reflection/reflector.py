@@ -50,7 +50,7 @@ class Reflector:
                 Your previous output was not a valid JSON or was missing required fields. 
                 Please ensure you output ONLY a single valid JSON object enclosed in ```json tags with 'skill_name' and 'sub_graph' fields."""  
 
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError) as e:
                 # If parsing fails, provide feedback for retry
                 prompt = f"""{prompt}\n\n
                 [Previous Attempt Feedback]\n

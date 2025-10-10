@@ -24,7 +24,7 @@ class MetaFlow:
 
     def __init__(self, config: Config):
         self.config = config
-        self.agents : Dict[str, BaseAgent] = {END: BaseAgent(END, config)}
+        self.agents : Dict[str, BaseAgent | CompositeAgent | None] = {END: None}
         self.start_agent : Optional[str] = None
         self.is_train = True
         self.termination_policy = self.config.TERMINATION_POLICY
