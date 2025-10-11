@@ -66,6 +66,40 @@ class MetaFlow:
         )
         self.learner = Learner(self.config, self.decision_space, self.agents)
 
+    def _check_cycle(self, new_skill_name: str, sub_graph: List[Tuple[str, str]]) -> bool:
+        """
+        Check if the new skill name will cause a cycle in the graph.
+        """
+        dependencies = defaultdict(list)
+        for agent_name, agent in self.agents.items():
+            if isinstance(agent, CompositeAgent):
+                # Add dependencies from composite agent to its sub-agents
+                for _, target_agent in agent.composite_graph.sub_graph:
+                    if target_agent != END:
+                        dependencies[agent_name].append(target_agent)
+
+        for _, target_agent in sub_graph:
+            if target_agent != END:
+                dependencies[new_skill_name].append(target_agent)
+
+        # DFS to detect cycle
+        visiting = set()
+        visited = set()
+
+        def has_cycle(node):
+            visiting.add(node)
+            for neighbor in dependencies.get(node, []):
+                if neighbor in visiting:
+                    return True  # Cycle detected
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True  # Cycle detected
+            visiting.remove(node)
+            visited.add(node)
+            return False  # No cycle detected
+
+        return has_cycle(new_skill_name)
+
     def _run_single_step(self, input: str, test_cases: List[str] = []) -> Tuple[GeneralState, bool]:
         """
         Run a single step of the MetaFlow.
@@ -116,6 +150,11 @@ class MetaFlow:
         skill_name = new_skill['skill_name']
         if skill_name in self.agents:
             return  # Skill already exists
+
+        # Check if the new skill will cause a cycle
+        if self._check_cycle(skill_name, new_skill['sub_graph']):
+            logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping learning.")
+            return  # Cycle detected, skip learning
 
         composite_agent = CompositeAgent(
             agent_name=skill_name,
