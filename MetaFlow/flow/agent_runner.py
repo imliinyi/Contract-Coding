@@ -12,14 +12,14 @@ class AgentRunner:
         self.agents = agents
 
     def run(self, agent_name: str, state: GeneralState, test_cases: List[str],
-            next_available_agents: List[str]) -> GeneralState:
+            next_available_agents: List[str]) -> Tuple[Message, str, str]:
         """
-        Run a single agent and return the resulting state, including the next agent decision.
+        Run a single agent, process its output, and return the message, code, and answer.
         """
         agent = self.agents.get(agent_name, None)
         if not agent:
             raise ValueError(f"Agent {agent_name} not found.")
-        
+
         message = agent._execute_agent(
             state=state,
             test_cases=test_cases,
@@ -36,14 +36,4 @@ class AgentRunner:
         else:
             answer = get_predict(message.output)
 
-        next_agents = agent.get_next_agents(message)
-
-        current_state = GeneralState(
-            task=state.task,
-            code=code if code else state.code,
-            answer=answer,
-            message=message,
-            next_agents=next_agents,
-        )
-
-        return current_state
+        return message, code, answer

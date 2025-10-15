@@ -2,7 +2,6 @@ from calendar import c
 from collections import defaultdict
 from typing import List, Tuple, Dict, Any, Optional
 
-from annotated_types import Ge
 from langgraph.graph import END
 
 from MetaFlow.config import Config
@@ -10,7 +9,7 @@ from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.flow.memory import MemoryManager
 from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.utils.state import GeneralState
+from MetaFlow.utils.state import GeneralState, Message
 
 
 class GraphTraverser:
@@ -65,6 +64,7 @@ class GraphTraverser:
                     test_cases=test_cases, 
                     next_available_agents=[])
                 successors = forward_graph.get(agent_name, [])
+                task_reqs = output_state['message'].get('task_requirements', {})
                 for successor in successors:
                     # Record the execution trace
                     execution_trace.append((agent_name, successor, 0.0))
@@ -73,7 +73,10 @@ class GraphTraverser:
                         terminating_states.append(output_state)
                     else:
                         # Collect the output state for the successor agent
-                        next_layer_inputs[successor].append(output_state)
+                        sub_task = task_reqs.get(successor, '')
+                        new_state = output_state.copy()
+                        new_state['sub_task'] = sub_task
+                        next_layer_inputs[successor].append(new_state)
 
             next_layer_states = {}
             for agent_name, states in next_layer_inputs.items():
@@ -119,7 +122,7 @@ class GraphTraverser:
                 # Add the output state to memory
                 self.memory_manager.add_message(agent_name, output_state.message)
 
-                next_agents = output_state.next_agents
+                next_agents = output_state.message.next_agents
                 continuing_agents, is_terminating = self._parse_agent_output(next_agents)
                 
                 layer_outputs.append({
@@ -178,7 +181,12 @@ class GraphTraverser:
                 
                 # edge_rewards.append(edge_reward)
                 for cont_n in continuing_agents:
-                    next_level_agents[cont_n].append(output_state)
+                    # Create a new state for each downstream agent with its specific sub-task
+                    task_reqs = output_state['message'].get('task_requirements', {})
+                    sub_task = task_reqs.get(cont_n, output_state.get('sub_task', ''))
+                    new_state_for_next_agent = output_state.copy()
+                    new_state_for_next_agent['sub_task'] = sub_task
+                    next_level_agents[cont_n].append(new_state_for_next_agent)
 
             if learn_terminating_only and self.termination_policy != 'all':
                 break

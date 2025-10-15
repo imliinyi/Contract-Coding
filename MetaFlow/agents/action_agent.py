@@ -6,13 +6,14 @@ from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.config import Config
 
 
-class LLMAgent(BaseAgent):
+class ActionAgent(BaseAgent):
     """
-    A concrete base agent for all agents that primarily rely on an LLM to generate a response.
+    A base agent for all agents that primarily rely on an LLM to generate a response.
     It handles the logic of formatting prompts, calling the LLM, and parsing the standard output.
     """
-    def __init__(self, agent_name: str, config: Config):
+    def __init__(self, agent_name: str, config: Config, tools: List[Dict[str, str]] = []):
         super().__init__(agent_name, config)
+        self.tools = tools
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
         """
@@ -28,10 +29,14 @@ class LLMAgent(BaseAgent):
             next_available_agents=next_available_agents
         )
 
-        response_text = self.llm.chat(inputs)
+        # response_text = self.llm.chat(inputs)
+        raw_response = self.llm.chat_with_tools(
+            messages=inputs,
+            tools=self.tools
+        )
 
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        message = self._parse_response(response_text)
+        message = self._parse_response(raw_response)
 
         return message

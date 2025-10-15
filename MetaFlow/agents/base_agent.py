@@ -6,9 +6,11 @@ from typing import List, Dict, Union, Optional
 
 from langgraph.graph import END
 
+from MetaFlow.prompt import system_prompt
 from MetaFlow.utils.state import Message, GeneralState
 from MetaFlow.llm.llm import LLM
-from MetaFlow.prompt.system_prompt import SYSTEM_PROMPT, AGENT_PROMPT
+from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
+from MetaFlow.prompt.agent_prompt import get_agent_prompt
 from MetaFlow.config import Config
 from MetaFlow.utils.coding.python_executor import PyExecutor
 
@@ -26,7 +28,7 @@ class BaseAgent(ABC):
         self.llm = LLM(
             api_key=self.config.OPENAI_API_KEY,
             api_base=self.config.OPENAI_API_BASE_URL,
-            deployment_name=self.config.OPENAI_API_DEPLOYMENT_NAME,
+            deployment_name=self.config.OPENAI_DEPLOYMENT_NAME,
             max_tokens=self.config.OPENAI_API_MAX_TOKENS,
             temperature=self.config.OPENAI_API_TEMPERATURE
         )
@@ -57,27 +59,25 @@ class BaseAgent(ABC):
         """
         Get the system prompt for the agent.
         """
-        return SYSTEM_PROMPT
+        return CORE_SYSTEM_PROMPT
 
     @staticmethod
     def get_agent_prompt(agent_name: str) -> str:
         """
         Get the agent prompt for the agent.
         """
-        return AGENT_PROMPT.get(agent_name, '')
+        return get_agent_prompt(agent_name)
 
     @staticmethod
-    def get_prompt(sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str], 
-                    agent_details: Dict[str, str]) -> List[Dict[str, Union[str, List]]]:
-        avail_agents_datails = ', '.join(f"{agent_name}: {agent_details.get(agent_name, 'N/A')};\n" 
-                                for agent_name in next_available_agents)
-        return [{
-                "role": "system", 
-                "content": [
-                    {"type": "text", "text": sys_prompt.format(avail_agents_datails=avail_agents_datails)},
-                    {"type": "text", "text": agent_prompt},
-                    ]
-            },
+    def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
+        avail_agents_datails = ', '.join(f"{agent_name}, " for agent_name in next_available_agents)
+        system_prompt = sys_prompt.format(
+            task_description=task_description,
+            agent_prompt=agent_prompt,
+            avail_agents_datails=avail_agents_datails
+        )
+        return [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt},]},
             {"role": "user", "content": [{"type": "text", "text": prompt}]}
         ]
 
@@ -88,33 +88,38 @@ class BaseAgent(ABC):
         """
         raise NotImplementedError("This method should be implemented by a subclass.")
 
-    def get_next_agents(self, last_message: Message) -> Optional[List[str]]:
+    def _parse_response(self, response_text: str) -> Message:
         """
-        Parses the structured JSON from the LLM's output to determine the next agents.
+        Parses the raw response from the agent's execution and packages it into a Message object.
         """
-        if not last_message or not last_message.output:
-            return [END]
+        thinking_match = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
+        output_match = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
+        next_agents_match = re.search(r'<next_agents>(.*?)</next_agents>', response_text, re.DOTALL)
+        task_reqs_match = re.search(r'<task_requirements>(.*?)</task_requirements>', response_text, re.DOTALL)
 
-        json_pattern = r'```json\n(.*?)\n```'
-        match = re.search(json_pattern, last_message.output, re.DOTALL)
-
-        if not match:
-            # Fallback or error handling if JSON block is not found
-            if "FINAL_ANSWER" in last_message.output.upper() or END in last_message.output.upper():
-                return [END]
-            return [END] # Indicates uncertainty, letting the flow decide
+        thinking = thinking_match.group(1).strip() if thinking_match else ""
+        raw_output = output_match.group(1).strip() if output_match else response_text
+        
+        try:
+            next_agents = json.loads(next_agents_match.group(1).strip()) if next_agents_match else [END]
+        except (json.JSONDecodeError, AttributeError):
+            next_agents = [END]
 
         try:
-            decision_json = json.loads(match.group(1))
-            next_agents = decision_json.get("next_agents")
-
-            if not next_agents or not isinstance(next_agents, list):
-                return [END] # Default to ending if the format is incorrect
-
-            return next_agents
+            task_requirements = json.loads(task_reqs_match.group(1).strip()) if task_reqs_match else {END: raw_output}
         except (json.JSONDecodeError, AttributeError):
-            logger.error("Failed to decode JSON from agent output.")
-            return [END] # Default to ending on parsing failure
+            task_requirements = {END: raw_output}
+        
+        if next_agents == [END] and END not in task_requirements:
+            task_requirements[END] = raw_output
+
+        return Message(
+            role=self.agent_name,
+            thinking=thinking,
+            output=raw_output,
+            next_agents=next_agents,
+            task_requirements=task_requirements
+        )
 
     def update_success_rate(self) -> None:
         """

@@ -28,17 +28,17 @@ class MemoryManager:
         if len(self.memory[agent_name]) > self.memory_window:
             self.memory[agent_name].pop(0)
 
-    def transfer_message(self, task: str, code: str, 
-                        answer: str, message: Message, next_agents: List[str]) -> GeneralState:
+    def transfer_message(self, task: str, code: str, sub_task: str,
+                        answer: str, message: Message) -> GeneralState:
         """
         Transfers a message from one agent to the next, updating the task, code, answer, and next_agents.
         """
         return GeneralState(
                 message=message, 
+                sub_task=sub_task, 
                 task=task, 
                 code=code, 
-                answer=answer, 
-                next_agents=next_agents
+                answer=answer,
             )
 
     def format_state(self, state: GeneralState) -> str:
@@ -70,8 +70,10 @@ class MemoryManager:
             {thinking_section}
             {output_section}\n
             ---\n
-            ### Your Task:
+            ### User Task:
             {state.task}
+            ### Your Task:
+            {state.sub_task}
         """
         
     def merge_message(self, states: List[Message]) -> Message:
@@ -118,10 +120,10 @@ class MemoryManager:
             # If no states are provided, return an empty state
             return GeneralState(
                     message=Message(role="system", thinking="", output=""), 
+                    sub_task="", 
                     task="", 
                     code="", 
-                    answer="", 
-                    next_agents=[]
+                    answer="",
                 )
         
         if len(states) == 1:
@@ -135,6 +137,11 @@ class MemoryManager:
             f"# Code from Upstream Agent {i + 1}:\n{state.code}"
             for i, state in enumerate(states) if state.code
         )
+        
+        merged_sub_task = separator.join(
+            f"# Sub Task from Upstream Agent {i + 1}:\n{state.sub_task}"
+            for i, state in enumerate(states) if state.sub_task
+        )
         merged_answer = separator.join(
             f"# Answer from Upstream Agent {i + 1}:\n{state.answer}"
             for i, state in enumerate(states) if state.answer
@@ -142,9 +149,9 @@ class MemoryManager:
 
         # Create a new state with the merged message and code/answer
         return GeneralState(
+            sub_task=merged_sub_task,
             task=states[0].task,  # Assuming task is the same for all states
             code=merged_code,
             answer=merged_answer,
-            message=merged_messages,
-            next_agents=states[0].next_agents  # Assuming next_agents are the same for all states
+            message=merged_messages
         )

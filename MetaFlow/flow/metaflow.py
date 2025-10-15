@@ -49,6 +49,7 @@ class MetaFlow:
             answer="",
             message=Message(role="user", thinking="", output=""),
             next_agents=self.start_agent,
+            task_requirements=None,
         )
 
     def _init_decision_space(self) -> None:
@@ -56,7 +57,7 @@ class MetaFlow:
         Initialize the decision space.
         """
         agents = list(self.agents.keys())
-        self.decision_space = DesicionSpace(agents, self.config)
+        self.decision_space = DecisionSpace(agents, self.config)
         self.graph_traverser = GraphTraverser(
             config=self.config,
             agents=self.agents,
