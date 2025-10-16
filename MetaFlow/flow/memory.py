@@ -11,7 +11,7 @@ class MemoryManager:
         self.llm = LLM(
             deployment_name=config.OPENAI_DEPLOYMENT_NAME,
             api_key=config.OPENAI_API_KEY,
-            base_url=config.OPENAI_API_BASE_URL,
+            api_base=config.OPENAI_API_BASE_URL,
             max_tokens=config.OPENAI_API_MAX_TOKENS,
             temperature=config.OPENAI_API_TEMPERATURE,
         )

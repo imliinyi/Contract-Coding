@@ -45,11 +45,10 @@ class MetaFlow:
         """
         return GeneralState(
             task=input,
+            sub_task="",
             code="",
             answer="",
-            message=Message(role="user", thinking="", output=""),
-            next_agents=self.start_agent,
-            task_requirements=None,
+            message=Message(role="user", thinking="", output="", next_agents=[self.start_agent], task_requirements={self.start_agent: input}),
         )
 
     def _init_decision_space(self) -> None:
@@ -204,6 +203,8 @@ class MetaFlow:
         Run the MetaFlow on the given input task and test cases.
         """
         self.is_train = False
+        if self.graph_traverser is None:
+            self._init_decision_space()
         final_state, is_success = self._run_single_step(input_task, test_cases)
         return final_state.answer
 

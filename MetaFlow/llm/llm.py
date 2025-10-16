@@ -20,7 +20,6 @@ class LLM(ABC):
             api_version="2024-03-01-preview",
             base_url=api_base,
         )
-        # self.prompt = hub.pull("hwchase17/react")
 
         self.deployment_name = deployment_name
         self.max_tokens = max_tokens
@@ -35,7 +34,7 @@ class LLM(ABC):
             messages=messages,
             timeout=30,
             temperature=self.temperature,
-            response_format={"type": "json_object"},
+            # response_format={"type": "json_object"},
             extra_headers={"X-TT-LOGID": ""},
         )
 

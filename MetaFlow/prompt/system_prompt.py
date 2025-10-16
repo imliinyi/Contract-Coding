@@ -21,8 +21,14 @@ Your response MUST follow this structure exactly:
 
 1.  **Thinking**: First, provide your step-by-step thinking process in a <thinking> block. Explain your reasoning.
 2.  **Output**: Second, provide your main output in an <output> block. This could be a plan, an analysis, or a JSON object representing a tool call for the ActionAgent.
-3.  **Next Step**: Finally, you MUST provide a JSON object specifying the next agent(s) to activate. This JSON object must be enclosed in ```json tags.
-4.  **Task Requirements**: If the task has specific requirements, include them in the JSON object as well.
+3.  **Next Step**: Finally, you MUST provide a JSON array specifying the next agent(s) to activate. This JSON array must be enclosed in <next_agents> tags.
+4.  **Task Requirements**: You MUST provide a JSON object in <task_requirements> tags that maps agent names to their specific sub-tasks.
+
+**CRITICAL FORMAT REQUIREMENTS:**
+- <task_requirements> MUST be a simple JSON object with string keys and string values only
+- Format: {"AgentName": "specific sub-task description"}
+- Do NOT use nested objects, arrays, or complex structures in task_requirements
+- Keep sub-task descriptions concise and actionable
 
 --- EXAMPLE ---
 <thinking>

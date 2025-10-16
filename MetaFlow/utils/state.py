@@ -3,26 +3,24 @@ from typing import List, Literal, Dict, Optional, Union
 from pydantic import BaseModel, Field
 
 
-MessageRole = Literal["user", "assistant", "system"]
+# MessageRole = Literal["user", "assistant", "system"]
 
 
-@dataclasses.dataclass
 class Message(BaseModel):
     """
     A message in the metaflow.
     """
-    role: MessageRole
+    role: str
     thinking: str = Field(default="", description="The thinking of the agent")
     output: str = Field(default="", description="The answer of the agent")
     next_agents: Optional[Union[str, List[str]]] = Field(default_factory=list, description="The next agents to execute")
     task_requirements: Optional[Dict[str, str]] = Field(default=None, description="The requirements for the task")
 
-    def model_post_init(self, __context):
-        if self.role not in MessageRole.__args__:
-            raise ValueError(f"Role {self.role} not in {MessageRole.__args__}")
+    # def model_post_init(self, __context):
+    #     if self.role not in ["user", "assistant", "system"]:
+    #         raise ValueError(f"Role {self.role} not in ['user', 'assistant', 'system']")
 
 
-@dataclasses.dataclass
 class GeneralState(BaseModel):
     """
     The state of the metaflow.

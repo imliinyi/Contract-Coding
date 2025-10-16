@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 
-from PriorDynaFlow.tools.coding.python_executor import PyExecutor
-from PriorDynaFlow.tools.coding.executor_types import Executor
+from MetaFlow.utils.coding.python_executor import PyExecutor
+from MetaFlow.utils.coding.executor_types import Executor
 
 EXECUTOR_MAPPING = {
     "py": PyExecutor,

@@ -93,7 +93,7 @@ class DecisionSpace(ABC):
 
         random_agent = []
         if random.random() < self.epsilon:
-            random_agent.append(random.choice(available_agents - best_agents))
+            random_agent.append(random.choice(list(available_agents - set(best_agents))))
 
         return random_agent + (best_agents if best_agents else [])
 

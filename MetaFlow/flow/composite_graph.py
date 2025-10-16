@@ -10,7 +10,7 @@ from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.flow.graph_traverser import GraphTraverser
 from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.flow.memory import MemoryManager
-from MetaFlow.prompt.system_prompt import AGENT_PROMPT, AGENT_DETAILS
+# from MetaFlow.prompt.system_prompt import COMPOSITE_AGENT_PROMPT
 from MetaFlow.config import Config
 from MetaFlow.utils.state import Message, GeneralState
 
@@ -138,11 +138,11 @@ class CompositeAgent(BaseAgent):
         # Use the standard prompt structure for the summary decision, aligning with BaseAgent.
         # This separates system instructions from user-provided context for better model performance.
         inputs = self.get_prompt(
+            task_description=state.task,
             sys_prompt=self.get_system_prompt(),
             agent_prompt=f"You are a project manager overseeing the task. Your role is to decide the next step after a sub-task ('{self.agent_name}') has finished.",
             prompt=user_prompt,
             next_available_agents=next_available_agents,
-            agent_details=AGENT_DETAILS
         )
 
         response_text = self.llm.chat(inputs)

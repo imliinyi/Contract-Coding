@@ -2,7 +2,7 @@ from typing import List
 from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.config import Config
-from MetaFlow.prompt.system_prompt import AGENT_DETAILS
+from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 
 # Import the required tool
 from MetaFlow.tools.code_tool import run_code

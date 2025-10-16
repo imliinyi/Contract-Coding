@@ -26,6 +26,7 @@ class GraphTraverser:
         self.decision_space = decision_space
         self.agent_runner = agent_runner
         self.memory_manager = memory_manager
+        self.termination_policy = self.config.TERMINATION_POLICY
 
     def sub_traverse(
         self,
@@ -111,19 +112,25 @@ class GraphTraverser:
             for agent_name, state in current_level_agents.items():
                 # state_copy = deepcopy(state)
                 next_available_agents = self.decision_space.get_next_avail_agents(
-                    agent_name=agent_name, 
-                    next_available_agents=list(self.agents.keys()))
-                output_state = self.agent_runner.run(
+                    state=agent_name, 
+                    available_agents=list(self.agents.keys()))
+                output_message, code, answer = self.agent_runner.run(
                     agent_name=agent_name, 
                     state=state, 
                     test_cases=test_cases, 
                     next_available_agents=next_available_agents)
 
                 # Add the output state to memory
-                self.memory_manager.add_message(agent_name, output_state.message)
+                self.memory_manager.add_message(agent_name, output_message)
 
-                next_agents = output_state.message.next_agents
+                next_agents = output_message.next_agents
                 continuing_agents, is_terminating = self._parse_agent_output(next_agents)
+                output_state = GeneralState(
+                    task=state.task,
+                    sub_task=state.sub_task,
+                    code=code,
+                    answer=answer,
+                    message=output_message)
                 
                 layer_outputs.append({
                     'agent_name': agent_name,
@@ -151,7 +158,7 @@ class GraphTraverser:
                 continuing_agents = output['continuing_agents']
                 output_state = output['output_state']
 
-                success_rate = [self.agents[agent].success_rate if agent in self.agents else 1 for agent in next_agents]
+                success_rate = [self.agents[agent].success_rate if agent in self.agents and self.agents[agent] is not None else 1 for agent in next_agents]
                 group_reward = self.decision_space.calculate_group_reward(
                     current_state=agent_name, 
                     action_group=next_agents, 
@@ -182,10 +189,10 @@ class GraphTraverser:
                 # edge_rewards.append(edge_reward)
                 for cont_n in continuing_agents:
                     # Create a new state for each downstream agent with its specific sub-task
-                    task_reqs = output_state['message'].get('task_requirements', {})
-                    sub_task = task_reqs.get(cont_n, output_state.get('sub_task', ''))
+                    task_reqs = output_state.message.task_requirements
+                    sub_task = task_reqs.get(cont_n, output_state.sub_task)
                     new_state_for_next_agent = output_state.copy()
-                    new_state_for_next_agent['sub_task'] = sub_task
+                    new_state_for_next_agent.sub_task = sub_task
                     next_level_agents[cont_n].append(new_state_for_next_agent)
 
             if learn_terminating_only and self.termination_policy != 'all':

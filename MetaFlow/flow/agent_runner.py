@@ -20,6 +20,7 @@ class AgentRunner:
         if not agent:
             raise ValueError(f"Agent {agent_name} not found.")
 
+        print(f"==========Running agent {agent_name}")
         message = agent._execute_agent(
             state=state,
             test_cases=test_cases,
@@ -35,5 +36,9 @@ class AgentRunner:
             answer = execute_code_get_return(code)
         else:
             answer = get_predict(message.output)
+        if not answer:
+            answer = ""
+
+        # print(f"==========Agent {agent_name} output: {message.output + str(message.next_agents)}")
 
         return message, code, answer

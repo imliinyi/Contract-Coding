@@ -29,7 +29,7 @@ class LLMAgent(BaseAgent):
         )
 
         response_text = self.llm.chat(inputs)
-
+        print(f"==========LLMAgent {self.agent_name} output: {response_text}")
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
         message = self._parse_response(response_text)

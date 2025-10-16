@@ -34,6 +34,7 @@ class ActionAgent(BaseAgent):
             messages=inputs,
             tools=self.tools
         )
+        print(f"==========ActionAgent {self.agent_name} output: {raw_response}")
 
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)

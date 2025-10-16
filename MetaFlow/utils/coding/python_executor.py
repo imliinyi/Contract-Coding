@@ -5,8 +5,8 @@ import ast
 import astunparse
 from typing import List
 
-from PriorDynaFlow.tools.coding.executor_utils import function_with_timeout
-from PriorDynaFlow.tools.coding.executor_types import ExecuteResult, Executor
+from MetaFlow.utils.coding.executor_utils import function_with_timeout
+from MetaFlow.utils.coding.executor_types import ExecuteResult, Executor
 
 
 def get_call_str(assert_statement: str) -> str:

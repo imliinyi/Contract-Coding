@@ -3,7 +3,7 @@ from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.config import Config
-from MetaFlow.prompt.system_prompt import AGENT_DETAILS
+from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 
 from MetaFlow.tools.code_tool import run_code
 from MetaFlow.tools.file_tool import read_file, write_file, list_directory

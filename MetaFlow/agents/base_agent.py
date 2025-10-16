@@ -1,7 +1,7 @@
 import re
 import json
 import logging
-from abc import ABC, abstractmethod, staticmethod
+from abc import ABC, abstractmethod
 from typing import List, Dict, Union, Optional
 
 from langgraph.graph import END
@@ -70,11 +70,11 @@ class BaseAgent(ABC):
 
     @staticmethod
     def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
-        avail_agents_datails = ', '.join(f"{agent_name}, " for agent_name in next_available_agents)
+        available_agents = ', '.join(f"{agent_name}, " for agent_name in next_available_agents)
         system_prompt = sys_prompt.format(
             task_description=task_description,
             agent_prompt=agent_prompt,
-            avail_agents_datails=avail_agents_datails
+            available_agents=available_agents
         )
         return [
             {"role": "system", "content": [{"type": "text", "text": system_prompt},]},
@@ -109,6 +109,11 @@ class BaseAgent(ABC):
             task_requirements = json.loads(task_reqs_match.group(1).strip()) if task_reqs_match else {END: raw_output}
         except (json.JSONDecodeError, AttributeError):
             task_requirements = {END: raw_output}
+        
+        if isinstance(task_requirements, dict):
+            for key, value in task_requirements.items():
+                if not isinstance(value, str):
+                    task_requirements[key] = json.dumps(value, ensure_ascii=False)
         
         if next_agents == [END] and END not in task_requirements:
             task_requirements[END] = raw_output
