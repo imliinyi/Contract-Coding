@@ -1,7 +1,9 @@
 import re
+import logging
 from typing import List, Dict, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.flow.decision_space import logger
 from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.config import Config
 
@@ -20,12 +22,15 @@ class ActionAgent(BaseAgent):
         A generic implementation that executes the agent's logic by calling the LLM.
         """
         # task_description = f"User Overall Task: {state.task}\nYour Current Sub-Task: {state.sub_task}"
-
+        # Pre agent output: {state.message.output}\n
+        prompt = f"""
+            Your Current Sub-Task: {state.sub_task}
+        """
         inputs = self.get_prompt(
             task_description=state.task,
             sys_prompt=self.get_system_prompt(), 
             agent_prompt=self.get_agent_prompt(self.agent_name),
-            prompt=state.sub_task, 
+            prompt=prompt, 
             next_available_agents=next_available_agents
         )
 
@@ -34,7 +39,7 @@ class ActionAgent(BaseAgent):
             messages=inputs,
             tools=self.tools
         )
-        print(f"==========ActionAgent {self.agent_name} output: {raw_response}")
+        logger.info(f"==========ActionAgent {self.agent_name} output: {raw_response}")
 
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)

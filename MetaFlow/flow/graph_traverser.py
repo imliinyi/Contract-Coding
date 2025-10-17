@@ -108,12 +108,19 @@ class GraphTraverser:
             layer_outputs = []
             # layer_futures = {}
             next_level_agents = defaultdict(list)
+            remaining_agents = list(current_level_agents.keys())
 
             for agent_name, state in current_level_agents.items():
+                print(f"\n--- Current Agent: {agent_name} ---")
+                remaining_agents.remove(agent_name)
+                print(f"--- Remaining Agents in Current Layer: {remaining_agents} ---")
+
                 # state_copy = deepcopy(state)
-                next_available_agents = self.decision_space.get_next_avail_agents(
-                    state=agent_name, 
-                    available_agents=list(self.agents.keys()))
+                # next_available_agents = self.decision_space.get_next_avail_agents(
+                #     state=agent_name, 
+                #     available_agents=list(self.agents.keys()))
+                # The current agent cannot delegate to itself. Remove it from the list of available agents.
+                next_available_agents = [name for name in self.agents.keys() if name != agent_name]
                 output_message, code, answer = self.agent_runner.run(
                     agent_name=agent_name, 
                     state=state, 
@@ -203,7 +210,9 @@ class GraphTraverser:
                 for agent_name, states in next_level_agents.items()
             }
             if not next_level_agents:
+                print("--- Next Layer Agents: [] ---")
                 break
+            print(f"--- Next Layer Agents: {list(next_level_agents.keys())} ---")
             all_layers.append(next_level_agents)
 
         return all_layers, execution_trace, terminating_states

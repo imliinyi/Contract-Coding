@@ -1,3 +1,4 @@
+import ast
 import re
 import json
 import logging
@@ -6,11 +7,10 @@ from typing import List, Dict, Union, Optional
 
 from langgraph.graph import END
 
-from MetaFlow.prompt import system_prompt
 from MetaFlow.utils.state import Message, GeneralState
 from MetaFlow.llm.llm import LLM
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
-from MetaFlow.prompt.agent_prompt import get_agent_prompt
+from MetaFlow.prompt.agent_prompt import get_agent_prompt, AGENT_DETAILS
 from MetaFlow.config import Config
 from MetaFlow.utils.coding.python_executor import PyExecutor
 
@@ -70,7 +70,7 @@ class BaseAgent(ABC):
 
     @staticmethod
     def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
-        available_agents = ', '.join(f"{agent_name}, " for agent_name in next_available_agents)
+        available_agents = ', '.join(f"{agent_name}: {AGENT_DETAILS[agent_name]}, " for agent_name in next_available_agents if agent_name in AGENT_DETAILS)
         system_prompt = sys_prompt.format(
             task_description=task_description,
             agent_prompt=agent_prompt,
@@ -101,8 +101,12 @@ class BaseAgent(ABC):
         raw_output = output_match.group(1).strip() if output_match else response_text
         
         try:
-            next_agents = json.loads(next_agents_match.group(1).strip()) if next_agents_match else [END]
-        except (json.JSONDecodeError, AttributeError):
+            next_agents_str = next_agents_match.group(1).strip()
+            try:
+                next_agents = json.loads(next_agents_str)
+            except json.JSONDecodeError:
+                next_agents = ast.literal_eval(next_agents_str)
+        except (ValueError, AttributeError, SyntaxError):
             next_agents = [END]
 
         try:

@@ -2,6 +2,7 @@ import re
 from typing import List, Dict, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.flow.decision_space import logger
 from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.config import Config
 
@@ -19,17 +20,24 @@ class LLMAgent(BaseAgent):
         A generic implementation that executes the agent's logic by calling the LLM.
         """
         # task_description = f"User Overall Task: {state.task}\nYour Current Sub-Task: {state.sub_task}"
-
+        # prompt = f"""
+        #     Pre agent output: {state.message.output}\n
+        #     Your Current Sub-Task: {state.sub_task}
+        # """
+        prompt = f"""
+            Your Current Sub-Task: {state.sub_task}
+        """
+        
         inputs = self.get_prompt(
             task_description=state.task,
             sys_prompt=self.get_system_prompt(), 
             agent_prompt=self.get_agent_prompt(self.agent_name),
-            prompt=state.sub_task, 
+            prompt=prompt, 
             next_available_agents=next_available_agents
         )
 
         response_text = self.llm.chat(inputs)
-        print(f"==========LLMAgent {self.agent_name} output: {response_text}")
+        logger.info(f"==========LLMAgent {self.agent_name} output: {response_text}")
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
         message = self._parse_response(response_text)

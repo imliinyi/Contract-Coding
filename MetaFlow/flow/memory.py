@@ -82,7 +82,13 @@ class MemoryManager:
          a single message.
         """
         if not states:
-            return Message(role="system", thinking="", output="")
+            return Message(
+                role="system", 
+                thinking="", 
+                output="", 
+                next_agents=[], 
+                task_requirements=None
+            )
 
         if len(states) == 1:
             return states[0]
@@ -106,10 +112,26 @@ class MemoryManager:
         # Join the parts with the separator
         merged_output = separator.join(merged_output)
         merged_thinking = separator.join(merged_thinking)
+        next_agents = []
+        task_requirements = {}
+        for state in states:
+            if state.next_agents:
+                next_agents.extend(state.next_agents)
+            if state.task_requirements:
+                for key, value in state.task_requirements.items():
+                    task_requirements[key] = task_requirements.get(key, [])  + '\n' + value
+
+        next_agents = list(set(next_agents))
 
         # The merged message represents the combined input for the next agent.
         # The role is 'user' as it serves as the prompt/input for the next step.
-        return Message(role="system", thinking=merged_thinking, output=merged_output)   
+        return Message(
+            role="system", 
+            thinking=merged_thinking, 
+            output=merged_output, 
+            next_agents=next_agents, 
+            task_requirements=task_requirements
+        )   
 
     def merge_memory(self, states: List[GeneralState]) -> GeneralState:
         """

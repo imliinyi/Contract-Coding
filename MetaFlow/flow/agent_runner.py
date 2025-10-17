@@ -2,6 +2,7 @@ import re
 from typing import List, Tuple, Dict, Any
 
 from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.flow.decision_space import logger
 from MetaFlow.utils.state import Message, GeneralState
 from MetaFlow.utils.coding.python_executor import execute_code_get_return
 from MetaFlow.utils.math.get_predict import get_predict
@@ -10,6 +11,18 @@ from MetaFlow.utils.math.get_predict import get_predict
 class AgentRunner:
     def __init__(self, agents: Dict[str, BaseAgent]):
         self.agents = agents
+
+    def _normalize_agent_name(self, agent_name: str, all_agents: List[str]) -> str:
+        """
+        Normalize the agent name to a registered name.
+        """
+        # Create a mapping from lowercase, underscore-removed names to original names
+        normalized_map = {re.sub(r'[^a-z0-9]', '', name.lower()): name for name in all_agents}
+        
+        # Normalize the input name
+        normalized_input = re.sub(r'[^a-z0-9]', '', agent_name.lower())
+        
+        return normalized_map.get(normalized_input, agent_name) # Return original if not found
 
     def run(self, agent_name: str, state: GeneralState, test_cases: List[str],
             next_available_agents: List[str]) -> Tuple[Message, str, str]:
@@ -20,7 +33,7 @@ class AgentRunner:
         if not agent:
             raise ValueError(f"Agent {agent_name} not found.")
 
-        print(f"==========Running agent {agent_name}")
+        logger.info(f"==========Running agent {agent_name}")
         message = agent._execute_agent(
             state=state,
             test_cases=test_cases,
@@ -38,6 +51,11 @@ class AgentRunner:
             answer = get_predict(message.output)
         if not answer:
             answer = ""
+
+        # Normalize the next_agents names
+        if message.next_agents:
+            normalized_next_agents = [self._normalize_agent_name(name, list(self.agents.keys())) for name in message.next_agents]
+            message.next_agents = normalized_next_agents
 
         # print(f"==========Agent {agent_name} output: {message.output + str(message.next_agents)}")
 

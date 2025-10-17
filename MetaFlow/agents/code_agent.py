@@ -9,16 +9,49 @@ from MetaFlow.tools.code_tool import run_code
 from MetaFlow.tools.file_tool import read_file, write_file, list_directory
 
 
-class SoftwareEngineerAgent(ActionAgent):
+# class SoftwareEngineerAgent(ActionAgent):
+#     """
+#     软件工程师(Software Engineer)智能体是编码的主力。
+#     它配备了文件读写、目录查看和代码执行的全套工具，能够根据
+#     架构设计和任务要求，独立完成代码的编写、调试、修改和测试。
+#     """
+#     def __init__(self, config: Config):
+#         # Define the list of tools for this agent
+#         tools = [run_code, read_file, write_file, list_directory]
+#         super().__init__("Software_Engineer", config, tools)
+class FrontendEngineerAgent(ActionAgent):
     """
-    软件工程师(Software Engineer)智能体是编码的主力。
-    它配备了文件读写、目录查看和代码执行的全套工具，能够根据
-    架构设计和任务要求，独立完成代码的编写、调试、修改和测试。
+    前端工程师(Frontend Engineer)智能体负责构建用户界面和交互逻辑。
+    它使用HTML、CSS、JavaScript等前端技术，与后端开发人员合作，
+    确保应用程序在不同浏览器和设备上的正常运行。
     """
     def __init__(self, config: Config):
         # Define the list of tools for this agent
         tools = [run_code, read_file, write_file, list_directory]
-        super().__init__("Software_Engineer", config, tools)
+        super().__init__("Frontend_Engineer", config, tools)
+
+
+class BackendEngineerAgent(ActionAgent):
+    """
+    后端工程师(Backend Engineer)智能体负责处理应用程序的业务逻辑和数据存储。
+    它使用服务器端语言（如Python、Java、Node.js等）和数据库（如MySQL、PostgreSQL等），
+    确保应用程序的功能和性能。
+    """
+    def __init__(self, config: Config):
+        # Define the list of tools for this agent
+        tools = [run_code, read_file, write_file, list_directory]
+        super().__init__("Backend_Engineer", config, tools)
+
+
+class AlgorithmEngineerAgent(ActionAgent):
+    """
+    算法工程师(Algorithm Engineer)智能体负责设计和实现复杂的算法和模型。
+    它使用数学、统计和编程技能，解决实际问题并优化系统性能。
+    """
+    def __init__(self, config: Config):
+        # Define the list of tools for this agent
+        tools = [run_code, read_file, write_file, list_directory]
+        super().__init__("Algorithm_Engineer", config, tools)
 
 
 class CodeReviewerAgent(LLMAgent):

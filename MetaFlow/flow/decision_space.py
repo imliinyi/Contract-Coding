@@ -15,7 +15,8 @@ from MetaFlow.config import Config
 
 
 logging.basicConfig(
-    # filename=Config.LOG_PATH,
+    filename=Config.LOG_PATH,
+    filemode='w',
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(name)s %(message)s'
 )
@@ -86,7 +87,7 @@ class DecisionSpace(ABC):
         for agent, q in sorted_by_q:
             q_groups[q].append(agent)
 
-        top_two_q_values = list(q_groups.keys())[:2]
+        top_two_q_values = list(q_groups.keys())[:3]
         best_agents = []
         for q in top_two_q_values:
             best_agents.extend(q_groups[q])
