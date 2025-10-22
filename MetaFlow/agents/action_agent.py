@@ -43,6 +43,29 @@ class ActionAgent(BaseAgent):
 
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        message = self._parse_response(raw_response)
+        message, _ = self._parse_response(raw_response)
 
         return message
+
+    def _run_expert_logic(self, state: GeneralState, stage_prompt: str, next_available_agents: List[str]) -> Tuple[Message, Optional[Dict[str, Any]]]:
+        """A reusable logic for expert agents that participate in design and implementation phases."""
+        shared_context = state.shared_context
+        status = shared_context.get("status", "") if shared_context else ""
+
+        if status == "DESIGNING" or status == "IMPLEMENTING":
+            prompt = stage_prompt
+        else:
+            prompt = f"Your sub-task is: {state.sub_task}. The project status is '{status}'. Please proceed using your available tools as appropriate."
+
+        inputs = self.get_prompt(
+            task_description=state.task,
+            sys_prompt=self.get_system_prompt(),
+            agent_prompt=self.get_agent_prompt(self.agent_name),
+            prompt=prompt,
+            next_available_agents=next_available_agents
+        )
+
+        response_text = self.llm.chat_with_tools(messages=inputs, tools=self.tools)
+        message, updated_shared_context = self._parse_response(response_text)
+
+        return message, updated_shared_context

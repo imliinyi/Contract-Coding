@@ -1,18 +1,18 @@
+from abc import ABC, abstractmethod
 import ast
-import re
 import json
 import logging
-from abc import ABC, abstractmethod
-from typing import List, Dict, Union, Optional
+import re
+from typing import Dict, List, Optional, Union
 
 from langgraph.graph import END
 
-from MetaFlow.utils.state import Message, GeneralState
-from MetaFlow.llm.llm import LLM
-from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
-from MetaFlow.prompt.agent_prompt import get_agent_prompt, AGENT_DETAILS
 from MetaFlow.config import Config
+from MetaFlow.llm.llm import LLM
+from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.coding.python_executor import PyExecutor
+from MetaFlow.utils.state import GeneralState, Message
 
 
 logger = logging.getLogger(__name__)
@@ -82,13 +82,13 @@ class BaseAgent(ABC):
         ]
 
     @abstractmethod
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Tuple[Message, Optional[Dict[str, Any]]]:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
         raise NotImplementedError("This method should be implemented by a subclass.")
 
-    def _parse_response(self, response_text: str) -> Message:
+    def _parse_response(self, response_text: str) -> Tuple[Message, str | None]:
         """
         Parses the raw response from the agent's execution and packages it into a Message object.
         """
@@ -96,9 +96,11 @@ class BaseAgent(ABC):
         output_match = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
         next_agents_match = re.search(r'<next_agents>(.*?)</next_agents>', response_text, re.DOTALL)
         task_reqs_match = re.search(r'<task_requirements>(.*?)</task_requirements>', response_text, re.DOTALL)
+        shared_context_match = re.search(r'<shared_context>(.*?)</shared_context>', response_text, re.DOTALL)
 
         thinking = thinking_match.group(1).strip() if thinking_match else ""
         raw_output = output_match.group(1).strip() if output_match else response_text
+        # shared_context = shared_context_match.group(1).strip() if shared_context_match else ""
         
         try:
             next_agents_str = next_agents_match.group(1).strip()
@@ -122,13 +124,18 @@ class BaseAgent(ABC):
         if next_agents == [END] and END not in task_requirements:
             task_requirements[END] = raw_output
 
+        try:
+            shared_context = json.loads(shared_context_match.group(1).strip()) if shared_context_match else None
+        except (json.JSONDecodeError, AttributeError):
+            shared_context = None
+
         return Message(
             role=self.agent_name,
             thinking=thinking,
             output=raw_output,
             next_agents=next_agents,
             task_requirements=task_requirements
-        )
+        ), shared_context
 
     def update_success_rate(self) -> None:
         """

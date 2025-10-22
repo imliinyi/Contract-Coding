@@ -1,18 +1,15 @@
 import re
+from typing import Dict, List, Tuple
 
-from numpy.random import f
 from pydantic import BaseModel
-from typing import List, Dict, Tuple
-from collections import defaultdict
 
 from MetaFlow.agents.base_agent import BaseAgent
-from MetaFlow.flow.agent_runner import AgentRunner
-from MetaFlow.flow.graph_traverser import GraphTraverser
-from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.flow.memory import MemoryManager
-# from MetaFlow.prompt.system_prompt import COMPOSITE_AGENT_PROMPT
 from MetaFlow.config import Config
-from MetaFlow.utils.state import Message, GeneralState
+from MetaFlow.flow.agent_runner import AgentRunner
+from MetaFlow.flow.decision_space import DecisionSpace
+from MetaFlow.flow.graph_traverser import GraphTraverser
+from MetaFlow.flow.memory import MemoryManager
+from MetaFlow.utils.state import GeneralState, Message
 
 
 class CompositeGraph(BaseModel):

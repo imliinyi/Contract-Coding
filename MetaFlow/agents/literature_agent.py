@@ -1,10 +1,11 @@
 from typing import List
 
-from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.agents.action_agent import ActionAgent
+from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.config import Config
-from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.tools.search_tool import search_web
+from MetaFlow.utils.state import GeneralState, Message
+
 
 class TechnicalWriterAgent(LLMAgent):
     """
@@ -14,6 +15,15 @@ class TechnicalWriterAgent(LLMAgent):
     """
     def __init__(self, config: Config):
         super().__init__("Technical_Writer", config)
+
+
+class EditingAgent(LLMAgent):
+    """
+    The Editing agent is responsible for reviewing and improving the quality of written content.
+    It can fix grammar, spelling, and style errors, as well as enhance the clarity and coherence of the text.
+    """
+    def __init__(self, config: Config):
+        super().__init__("Editing_Agent", config)
 
 
 class ResearcherAgent(ActionAgent):

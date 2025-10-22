@@ -1,14 +1,13 @@
-from calendar import c
 from collections import defaultdict
-from typing import List, Tuple, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.graph import END
 
-from MetaFlow.config import Config
 from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.config import Config
 from MetaFlow.flow.agent_runner import AgentRunner
-from MetaFlow.flow.memory import MemoryManager
 from MetaFlow.flow.decision_space import DecisionSpace
+from MetaFlow.flow.memory import MemoryManager
 from MetaFlow.utils.state import GeneralState, Message
 
 
@@ -121,7 +120,7 @@ class GraphTraverser:
                 #     available_agents=list(self.agents.keys()))
                 # The current agent cannot delegate to itself. Remove it from the list of available agents.
                 next_available_agents = [name for name in self.agents.keys() if name != agent_name]
-                output_message, code, answer = self.agent_runner.run(
+                output_message, code, answer, shared_context = self.agent_runner.run(
                     agent_name=agent_name, 
                     state=state, 
                     test_cases=test_cases, 
@@ -135,6 +134,7 @@ class GraphTraverser:
                 output_state = GeneralState(
                     task=state.task,
                     sub_task=state.sub_task,
+                    shared_context=shared_context, 
                     code=code,
                     answer=answer,
                     message=output_message)

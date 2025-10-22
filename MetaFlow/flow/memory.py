@@ -1,9 +1,9 @@
 from ast import Dict
-from typing import List, Dict
+from typing import Dict, List
 
-from MetaFlow.utils.state import Message, GeneralState
-from MetaFlow.llm.llm import LLM
 from MetaFlow.config import Config
+from MetaFlow.llm.llm import LLM
+from MetaFlow.utils.state import GeneralState, Message
 
 
 class MemoryManager:
@@ -28,7 +28,7 @@ class MemoryManager:
         if len(self.memory[agent_name]) > self.memory_window:
             self.memory[agent_name].pop(0)
 
-    def transfer_message(self, task: str, code: str, sub_task: str,
+    def transfer_message(self, task: str, code: str, sub_task: str, shared_context: str,
                         answer: str, message: Message) -> GeneralState:
         """
         Transfers a message from one agent to the next, updating the task, code, answer, and next_agents.
@@ -36,6 +36,7 @@ class MemoryManager:
         return GeneralState(
                 message=message, 
                 sub_task=sub_task, 
+                shared_context=shared_context,
                 task=task, 
                 code=code, 
                 answer=answer,
@@ -45,6 +46,14 @@ class MemoryManager:
         """
         Formats a message for the LLM, including the task and the message content.
         """
+        # Add the shared context
+        shared_context_section = ""
+        if state.shared_context:
+            shared_context_section = f"""
+                ### Shared Context:
+                {state.shared_context}
+            """
+
         thinking_section = ""
         message = state.message
         if message.thinking:
@@ -67,7 +76,11 @@ class MemoryManager:
 
         # Combine all sections
         return f"""
+            ### Current programme:
+            {shared_context_section}
+            ### Previous Agent's Thought:
             {thinking_section}
+            ### Previous Agent's Output:
             {output_section}\n
             ---\n
             ### User Task:

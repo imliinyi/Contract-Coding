@@ -1,4 +1,5 @@
-from typing import List, Literal, Dict, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
+
 from pydantic import BaseModel, Field
 
 
@@ -15,6 +16,7 @@ class Message(BaseModel):
     next_agents: Optional[Union[str, List[str]]] = Field(default_factory=list, description="The next agents to execute")
     task_requirements: Optional[Dict[str, str]] = Field(default=None, description="The requirements for the task")
 
+
     # def model_post_init(self, __context):
     #     if self.role not in ["user", "assistant", "system"]:
     #         raise ValueError(f"Role {self.role} not in ['user', 'assistant', 'system']")
@@ -25,6 +27,7 @@ class GeneralState(BaseModel):
     The state of the metaflow.
     """
     task: str = Field(default="", description="The original user task, remains unchanged")
+    shared_context: Optional[Dict[str, Any]] = Field(default=None, description="A living document for negotiation, containing data and status.")
     sub_task: str = Field(default="", description="The specific sub-task for the current agent")
     code: str = Field(default="", description="The code of the agent")
     answer: str = Field(default="", description="The current answer given")

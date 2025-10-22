@@ -1,11 +1,11 @@
 import re
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.flow.decision_space import logger
-from MetaFlow.utils.state import Message, GeneralState
 from MetaFlow.utils.coding.python_executor import execute_code_get_return
 from MetaFlow.utils.math.get_predict import get_predict
+from MetaFlow.utils.state import GeneralState, Message
 
 
 class AgentRunner:
@@ -25,16 +25,16 @@ class AgentRunner:
         return normalized_map.get(normalized_input, agent_name) # Return original if not found
 
     def run(self, agent_name: str, state: GeneralState, test_cases: List[str],
-            next_available_agents: List[str]) -> Tuple[Message, str, str]:
+            next_available_agents: List[str]) -> Tuple[Message, str, str, Optional[Dict[str, Any]]]:
         """
-        Run a single agent, process its output, and return the message, code, and answer.
+        Run a single agent, process its output, and return the message, code, answer, and shared_context.
         """
         agent = self.agents.get(agent_name, None)
         if not agent:
             raise ValueError(f"Agent {agent_name} not found.")
 
         logger.info(f"==========Running agent {agent_name}")
-        message = agent._execute_agent(
+        message, shared_context = agent._execute_agent(
             state=state,
             test_cases=test_cases,
             next_available_agents=next_available_agents
@@ -59,4 +59,4 @@ class AgentRunner:
 
         # print(f"==========Agent {agent_name} output: {message.output + str(message.next_agents)}")
 
-        return message, code, answer
+        return message, code, answer, shared_context
