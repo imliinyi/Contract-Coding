@@ -3,11 +3,12 @@ import ast
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langgraph.graph import END
 
 from MetaFlow.config import Config
+from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.llm.llm import LLM
 from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
@@ -69,7 +70,8 @@ class BaseAgent(ABC):
         return get_agent_prompt(agent_name)
 
     @staticmethod
-    def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
+    def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, 
+            next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
         available_agents = ', '.join(f"{agent_name}: {AGENT_DETAILS[agent_name]}, " for agent_name in next_available_agents if agent_name in AGENT_DETAILS)
         system_prompt = sys_prompt.format(
             task_description=task_description,
@@ -82,34 +84,39 @@ class BaseAgent(ABC):
         ]
 
     @abstractmethod
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Tuple[Message, Optional[Dict[str, Any]]]:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], 
+        document_manger: DocumentManager, next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
         raise NotImplementedError("This method should be implemented by a subclass.")
 
-    def _parse_response(self, response_text: str) -> Tuple[Message, str | None]:
+    def _parse_document_action(self, response_text: str, document_manager: DocumentManager):
+        """
+        Parses the <document_action> tag and executes the actions using the DocumentManager.
+        """
+        action_match = re.search(r'<document_action>(.*?)</document_action>', response_text, re.DOTALL)
+        if action_match:
+            action_json_str = action_match.group(1).strip()
+            try:
+                actions = json.loads(action_json_str)
+                document_manager.execute_actions(actions)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Failed to parse or execute document actions: {e}")
+
+    def _parse_response(self, response_text: str, document_manager: DocumentManager) -> Message:
         """
         Parses the raw response from the agent's execution and packages it into a Message object.
         """
+
+        self._parse_document_action(response_text, document_manager)
+
         thinking_match = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         output_match = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        next_agents_match = re.search(r'<next_agents>(.*?)</next_agents>', response_text, re.DOTALL)
         task_reqs_match = re.search(r'<task_requirements>(.*?)</task_requirements>', response_text, re.DOTALL)
-        shared_context_match = re.search(r'<shared_context>(.*?)</shared_context>', response_text, re.DOTALL)
 
         thinking = thinking_match.group(1).strip() if thinking_match else ""
         raw_output = output_match.group(1).strip() if output_match else response_text
-        # shared_context = shared_context_match.group(1).strip() if shared_context_match else ""
-        
-        try:
-            next_agents_str = next_agents_match.group(1).strip()
-            try:
-                next_agents = json.loads(next_agents_str)
-            except json.JSONDecodeError:
-                next_agents = ast.literal_eval(next_agents_str)
-        except (ValueError, AttributeError, SyntaxError):
-            next_agents = [END]
 
         try:
             task_requirements = json.loads(task_reqs_match.group(1).strip()) if task_reqs_match else {END: raw_output}
@@ -121,13 +128,7 @@ class BaseAgent(ABC):
                 if not isinstance(value, str):
                     task_requirements[key] = json.dumps(value, ensure_ascii=False)
         
-        if next_agents == [END] and END not in task_requirements:
-            task_requirements[END] = raw_output
-
-        try:
-            shared_context = json.loads(shared_context_match.group(1).strip()) if shared_context_match else None
-        except (json.JSONDecodeError, AttributeError):
-            shared_context = None
+        next_agents = list(task_requirements.keys())
 
         return Message(
             role=self.agent_name,
@@ -135,7 +136,8 @@ class BaseAgent(ABC):
             output=raw_output,
             next_agents=next_agents,
             task_requirements=task_requirements
-        ), shared_context
+        )
+
 
     def update_success_rate(self) -> None:
         """

@@ -1,9 +1,10 @@
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
 from MetaFlow.flow.decision_space import logger
+from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.utils.state import GeneralState, Message
 
 
@@ -15,7 +16,8 @@ class LLMAgent(BaseAgent):
     def __init__(self, agent_name: str, config: Config):
         super().__init__(agent_name, config)
 
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Tuple[Message, Optional[Dict[str, Any]]]:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], 
+        document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
         """
         A generic implementation that executes the agent's logic by calling the LLM.
         """
@@ -40,9 +42,6 @@ class LLMAgent(BaseAgent):
         logger.info(f"==========LLMAgent {self.agent_name} output: {response_text}")
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        message, shared_context = self._parse_response(response_text)
+        message = self._parse_response(response_text, document_manager)
 
-        if not shared_context:
-            shared_context = state.shared_context
-
-        return message, shared_context
+        return message

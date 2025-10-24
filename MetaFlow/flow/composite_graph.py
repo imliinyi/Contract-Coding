@@ -5,11 +5,11 @@ from pydantic import BaseModel
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.flow.graph_traverser import GraphTraverser
-from MetaFlow.flow.memory import MemoryManager
+from MetaFlow.flow.state_processor import StateProcessor
 from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.flow.document_manager import DocumentManager
 
 
 class CompositeGraph(BaseModel):
@@ -22,31 +22,31 @@ class CompositeGraph(BaseModel):
         decision_space: DecisionSpace,
         sub_graph: List[Tuple[str, str]], 
         agents: Dict[str, BaseAgent],
-        agent_runner: AgentRunner
+        document_manager: DocumentManager
     ):
         self.agent_name = agent_name
         self.config = config
         self.decision_space = decision_space
         self.sub_graph = sub_graph
         self.agents = agents
-        self.agent_runner = agent_runner
-        self.memory_manager = MemoryManager(self.config, self.config.MEMORY_WINDOW)
+        self.document_manager = document_manager
+        self.state_processor = StateProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
 
-    def run(self, initial_state: GeneralState, test_cases: List[Dict[str, str]]) -> List[GeneralState]:
+    def run(self, initial_state: GeneralState, test_cases: List[Dict[str, str]], document_manager: DocumentManager) -> List[GeneralState]:
         """
         Executes the predefined subgraph by delegating to a GraphTraverser.
         """
         traverser = GraphTraverser(
             config=self.config,
             agents=self.agents, 
+            document_manager=self.document_manager,
             decision_space=self.decision_space,
-            agent_runner=self.agent_runner, 
-            memory_manager=self.memory_manager
+            state_processor=self.state_processor
         )
         _, _, terminating_states = traverser.sub_traverse(
             sub_graph=self.sub_graph,
             initial_states=initial_state,
-            test_cases=test_cases,
+            test_cases=test_cases
         )
         # entry_points = self.sub_graph.get('START', [])
         # if not entry_points:
@@ -101,7 +101,7 @@ class CompositeAgent(BaseAgent):
         decision_space: DecisionSpace,
         sub_graph: List[Tuple[str, str]], 
         agents: Dict[str, BaseAgent],
-        agent_runner: AgentRunner
+        document_manager: DocumentManager
     ):
         super().__init__(agent_name, config)
         self.composite_graph = CompositeGraph(
@@ -109,15 +109,15 @@ class CompositeAgent(BaseAgent):
             config=config, 
             decision_space=decision_space,
             sub_graph=sub_graph, 
-            agents=agents, 
-            agent_runner=agent_runner
+            agents=agents,
+            document_manager=document_manager
         )
 
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str], document_manager: DocumentManager) -> Message:
         """
         Executes the composite graph, then calls the LLM to summarize the results and decide the next step.
         """
-        final_states = self.composite_graph.run(state, test_cases)
+        final_states = self.composite_graph.run(state, test_cases, document_manager)
 
         if not final_states:
             return Message(
@@ -144,13 +144,10 @@ class CompositeAgent(BaseAgent):
 
         response_text = self.llm.chat(inputs)
 
-        thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
-        output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
+        # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
+        # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
+        message, _ = self._parse_response(response_text, document_manager)
 
-        return Message(
-            role=self.agent_name,
-            thinking=thinking.group(1).strip() if thinking else "",
-            output=output.group(1).strip() if output else response_text,
-        )
+        return message
 
     

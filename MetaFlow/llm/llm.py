@@ -59,7 +59,7 @@ class LLM(ABC):
                 )
                 response_message = response.choices[0].message
                 response_content = response_message.content or ""
-                # logger.info(f"LLM response content: {response_content}")
+                logger.info(f"LLM response content: {response_content}")
             except Exception as e:
                 logger.error(f"Error in LLM call during tool use loop: {e}")
                 return f'<thinking>LLM API call failed.</thinking><output>Error: {e}</output><next_agents>["END"]</next_agents><task_requirements>{{}}</task_requirements>'
@@ -70,13 +70,13 @@ class LLM(ABC):
             # Primary Logic: Parse the <output> tag for a tool call
             output_match = re.search(r'<output>(.*?)</output>', response_content, re.DOTALL)
             if not output_match:
-                return response_content # No output tag, assume final answer
+                return response_content 
 
             output_text = output_match.group(1).strip()
             try:
                 parsed_json = json.loads(output_text)
             except (json.JSONDecodeError, TypeError):
-                return response_content # Output is not JSON, assume final answer
+                return response_content 
 
             tool_calls_to_execute = []
             if isinstance(parsed_json, dict) and parsed_json.get("tool_name") == "multi_tool_use.parallel":

@@ -34,7 +34,7 @@ class AgentRunner:
             raise ValueError(f"Agent {agent_name} not found.")
 
         logger.info(f"==========Running agent {agent_name}")
-        message, shared_context = agent._execute_agent(
+        message, collaborative_document = agent._execute_agent(
             state=state,
             test_cases=test_cases,
             next_available_agents=next_available_agents
@@ -59,4 +59,4 @@ class AgentRunner:
 
         # print(f"==========Agent {agent_name} output: {message.output + str(message.next_agents)}")
 
-        return message, code, answer, shared_context
+        return message, code, answer, collaborative_document

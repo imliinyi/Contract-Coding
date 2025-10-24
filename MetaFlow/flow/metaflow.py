@@ -1,21 +1,21 @@
-import re
-import logging
 from collections import defaultdict
-from typing import Any, Dict, Optional, List, Tuple
+import logging
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.graph import END
 
-from MetaFlow.flow.memory import MemoryManager
-from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.flow.composite_graph import CompositeGraph, CompositeAgent
-from MetaFlow.flow.graph_traverser import GraphTraverser
-from MetaFlow.flow.agent_runner import AgentRunner
-from MetaFlow.flow.learner import Learner
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
+from MetaFlow.flow.composite_graph import CompositeAgent, CompositeGraph
+from MetaFlow.flow.decision_space import DecisionSpace
+from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.flow.graph_traverser import GraphTraverser
+from MetaFlow.flow.learner import Learner
+from MetaFlow.flow.state_processor import StateProcessor
 from MetaFlow.reflection.reflector import Reflector
 from MetaFlow.reflection.triggers import check_layer_revisit, check_long_path
-from MetaFlow.utils.state import Message, GeneralState
+from MetaFlow.utils.state import GeneralState, Message
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +29,12 @@ class MetaFlow:
         self.is_train = True
         self.termination_policy = self.config.TERMINATION_POLICY
 
-        self.memory_manager = MemoryManager(self.config, self.config.MEMORY_WINDOW)
+        self.state_processor = StateProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
         self.decision_space: Optional[DecisionSpace] = None
-        self.agent_runner: Optional[AgentRunner] = AgentRunner(self.agents)
         self.graph_traverser: Optional[GraphTraverser] = None
         self.learner: Optional[Learner] = None
         self.reflector = Reflector(self.config)
+        self.document_manager = DocumentManager()
 
         if self.termination_policy not in ['any', 'majority', 'all']:
             raise ValueError("TERMINATION_PLOICY must be one of ['any', 'majority', 'all'].")
@@ -61,8 +61,8 @@ class MetaFlow:
             config=self.config,
             agents=self.agents,
             decision_space=self.decision_space,
-            agent_runner=self.agent_runner,
-            memory_manager=self.memory_manager
+            state_processor=self.state_processor,
+            document_manager=self.document_manager
         )
         self.learner = Learner(self.config, self.decision_space, self.agents)
 
@@ -104,6 +104,7 @@ class MetaFlow:
         """
         Run a single step of the MetaFlow.
         """
+        self.document_manager = DocumentManager() # Reset for each run
         initial_state = self._initialize_state(input)
         
         # Forward propagation
@@ -162,6 +163,7 @@ class MetaFlow:
             decision_space=self.decision_space,
             sub_graph=new_skill['sub_graph'],
             agents=self.agents,
+            document_manager=self.document_manager
         )
         self.register_agent(skill_name, composite_agent)
 
