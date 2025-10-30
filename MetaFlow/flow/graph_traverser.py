@@ -3,12 +3,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.graph import END
 
-from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.config import Config
 from MetaFlow.flow.decision_space import DecisionSpace
 from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.flow.state_processor import StateProcessor
-from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.utils.state import GeneralState
 from MetaFlow.utils.log import get_logger
 
 
@@ -17,14 +17,14 @@ class GraphTraverser:
     def __init__(
         self,
         config: Config,
-        agents: Dict[str, BaseAgent],
+        agent_runner: AgentRunner,
         decision_space: DecisionSpace,
         state_processor: StateProcessor,
         document_manager: DocumentManager,
     ):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
-        self.agents = agents
+        self.agent_runner = agent_runner
         self.decision_space = decision_space
         self.state_processor = state_processor
         self.termination_policy = self.config.TERMINATION_POLICY
@@ -66,25 +66,15 @@ class GraphTraverser:
                 #     state=input_state, 
                 #     test_cases=test_cases, 
                 #     next_available_agents=[])
-                agent = self.agents.get(agent_name)
-                if not agent:
-                    logger.warning(f"Agent {agent_name} not found, skipping.")
-                    continue
-
-                output_message, shared_context = agent._execute_agent(
+                output_state = self.agent_runner.run(
+                    agent_name=agent_name, 
                     state=input_state, 
                     test_cases=test_cases, 
-                    next_available_agents=[],
-                    document_manger=self.document_manger,
-                )
-                output_state = self.state_processor.process_agent_output(
-                    message=output_message,
-                    collaborative_document=shared_context,
-                    current_state=input_state 
+                    next_available_agents=[]
                 )
                 
                 successors = forward_graph.get(agent_name, [])
-                task_reqs = output_state['message'].get('task_requirements', {})
+                task_reqs = output_state['task_requirements'] 
                 for successor in successors:
                     # Record the execution trace
                     execution_trace.append((agent_name, successor, 0.0))
@@ -134,33 +124,17 @@ class GraphTraverser:
                 remaining_agents.remove(agent_name)
                 print(f"--- Remaining Agents in Current Layer: {remaining_agents} ---")
 
-                agent = self.agents.get(agent_name)
-                if not agent:
-                    logger.warning(f"Agent {agent_name} not found, skipping.")
-                    continue
-
-                next_available_agents = [name for name in self.agents.keys() if name != agent_name]
-                
-                output_message = agent._execute_agent(
+                output_state = self.agent_runner.run(
+                    agent_name=agent_name,
                     state=state, 
                     test_cases=test_cases, 
-                    next_available_agents=next_available_agents,
-                    document_manager=self.document_manager,
+                    next_available_agents=next_available_agents
                 )
-                # logger.info(f"======Current Document: {self.document_manager.get()}")
-                
-                output_state = self.state_processor.process_agent_output(
-                    message=output_message,
-                    current_state=state
-                )
-
-                # state['shared_context']['proposals'] = shared_context
-                # logger.info(f"======Current Shared Context: {state['shared_context']}")
 
                 # Add the output state to memory
-                self.state_processor.add_message(agent_name, output_message)
+                self.state_processor.add_message(agent_name, output_state)
 
-                next_agents = output_state.message.next_agents
+                next_agents = output_state.next_agents
                 continuing_agents, is_terminating = self._parse_agent_output(next_agents)
                 
                 layer_outputs.append({
@@ -220,10 +194,10 @@ class GraphTraverser:
                 # edge_rewards.append(edge_reward)
                 for cont_n in continuing_agents:
                     # Create a new state for each downstream agent with its specific sub-task
-                    task_reqs = output_state.message.task_requirements
-                    sub_task = task_reqs.get(cont_n, output_state.sub_task)
+                    task_reqs = output_state['task_requirements']
+                    sub_task = task_reqs.get(cont_n, output_state['sub_task'])
                     new_state_for_next_agent = output_state.copy()
-                    new_state_for_next_agent.sub_task = sub_task
+                    new_state_for_next_agent['sub_task'] = sub_task
                     next_level_agents[cont_n].append(new_state_for_next_agent)
 
             if learn_terminating_only and self.termination_policy != 'all':

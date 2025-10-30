@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.config import Config
 from MetaFlow.tools.code_tool import run_code
@@ -8,7 +7,7 @@ from MetaFlow.tools.file_tool import file_tree, list_directory, write_file, read
 from MetaFlow.utils.state import GeneralState, Message
 
 
-class FrontendEngineerAgent(ActionAgent):
+class FrontendEngineerAgent(LLMAgent):
     """
     The Frontend Engineer agent is responsible for building the user interface and interaction logic of the application.
     It uses HTML, CSS, and JavaScript to create responsive and interactive web pages.
@@ -18,7 +17,7 @@ class FrontendEngineerAgent(ActionAgent):
         super().__init__("Frontend_Engineer", config, tools)
 
 
-class BackendEngineerAgent(ActionAgent):
+class BackendEngineerAgent(LLMAgent):
     """
     The Backend Engineer agent is responsible for handling the application's business logic and data storage.
     It uses server-side languages like Python, Java, or Node.js to build the application's server-side components. 
@@ -28,7 +27,7 @@ class BackendEngineerAgent(ActionAgent):
         super().__init__("Backend_Engineer", config, tools)
 
 
-class AlgorithmEngineerAgent(ActionAgent):
+class AlgorithmEngineerAgent(LLMAgent):
     """
     The Algorithm Engineer agent is responsible for designing and implementing complex algorithms and models.
     It uses mathematical, statistical, and programming skills to solve real-world problems and optimize system performance.
@@ -38,7 +37,7 @@ class AlgorithmEngineerAgent(ActionAgent):
         super().__init__("Algorithm_Engineer", config, tools)
 
 
-class CodeReviewerAgent(ActionAgent):
+class CodeReviewerAgent(LLMAgent):
     """
     The Code Reviewer agent analyzes code for quality, style, and adherence to best practices.
     It acts as an automated peer reviewer, suggesting improvements to readability, 

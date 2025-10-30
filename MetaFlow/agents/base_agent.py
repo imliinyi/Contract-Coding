@@ -13,7 +13,8 @@ from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.coding.python_executor import PyExecutor
 from MetaFlow.utils.log import get_logger
-from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.utils.state import GeneralState
+from MetaFlow.flow.state_processor import StateProcessor
 
 
 class BaseAgent(ABC):
@@ -91,7 +92,7 @@ class BaseAgent(ABC):
 
     @abstractmethod
     def _execute_agent(self, state: GeneralState, test_cases: List[str], 
-        document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
+        document_manager: DocumentManager, state_processor: StateProcessor, next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
@@ -121,9 +122,9 @@ class BaseAgent(ABC):
             except (json.JSONDecodeError, TypeError) as e:
                 self.logger.error(f"Failed to parse or execute document actions: {e}")
 
-    def _parse_response(self, response_text: str, document_manager: DocumentManager) -> Message:
+    def _parse_response(self, response_text: str, document_manager: DocumentManager, current_state: GeneralState) -> GeneralState:
         """
-        Parses the raw response from the agent's execution and packages it into a Message object.
+        Parses the raw response from the agent's execution and packages it into a new GeneralState object.
         """
 
         self._parse_document_action(response_text, document_manager)
@@ -140,26 +141,18 @@ class BaseAgent(ABC):
         except (json.JSONDecodeError, AttributeError):
             task_requirements = {END: raw_output}
         
-        # if isinstance(task_requirements, dict):
-        #     sanitized_task_requirements = {}
-        #     for key, value in task_requirements.items():
-        #         sanitized_key = re.sub(r'_\d+$', '', key)
-        #         if not isinstance(value, str):
-        #             value = json.dumps(value, ensure_ascii=False)
-        #             sanitized_task_requirements[sanitized_key] = value
-        #     task_requirements = sanitized_task_requirements
-        
         next_agents = list(task_requirements.keys())
         next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
 
-        return Message(
-            role=self.agent_name,
-            thinking=thinking,
-            output=raw_output,
-            next_agents=next_agents,
-            task_requirements=task_requirements
-        )
+        # Create a new state, preserving the original task and sub_task from the input state
+        new_state = current_state.model_copy(deep=True)
+        new_state.role = self.agent_name
+        new_state.thinking = thinking
+        new_state.output = raw_output
+        new_state.next_agents = next_agents
+        new_state.task_requirements = task_requirements
 
+        return new_state
 
     def update_success_rate(self) -> None:
         """

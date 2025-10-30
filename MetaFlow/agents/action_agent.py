@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
 from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.flow.state_processor import StateProcessor
 from MetaFlow.tools.file_tool import file_tree
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState, Message
@@ -21,12 +22,10 @@ class ActionAgent(BaseAgent):
         self.logger = get_logger(self.config.LOG_PATH)
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], 
-        document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
+        document_manager: DocumentManager, state_processor: StateProcessor, next_available_agents: List[str]) -> Message:
         """
         A generic implementation that executes the agent's logic by calling the LLM.
         """
-        # task_description = f"User Overall Task: {state.task}\nYour Current Sub-Task: {state.sub_task}"
-        # Pre agent output: {state.message.output}\n
         prompt = f"""
             Your Current Sub-Task: {state.sub_task},
 
@@ -34,7 +33,16 @@ class ActionAgent(BaseAgent):
 
             Current Collaborative Document: {document_manager.get()}
         """
-        inputs = self.get_prompt(
+        
+        # Get managed memory and prepare chat history
+        agent_memory = state_processor.get_memory(self.agent_name)
+        memory_history = []
+        for msg in agent_memory:
+            role = "system" if "<summary" in msg.output else msg.role
+            memory_history.append({"role": role, "content": msg.output})
+
+        # Get the standard prompt components
+        system_inputs = self.get_prompt(
             task_description=state.task,
             sys_prompt=self.get_system_prompt(), 
             agent_prompt=self.get_agent_prompt(self.agent_name),
@@ -42,15 +50,15 @@ class ActionAgent(BaseAgent):
             next_available_agents=next_available_agents
         )
 
-        # response_text = self.llm.chat(inputs)
+        # Combine memory with the fresh prompt
+        inputs = memory_history + system_inputs
+
         raw_response = self.llm.chat_with_tools(
             messages=inputs,
             tools=self.tools
         )
         self.logger.info(f"==========ActionAgent {self.agent_name} output: {raw_response}")
 
-        # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
-        # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
         message = self._parse_response(raw_response, document_manager)
 
         return message

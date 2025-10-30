@@ -22,15 +22,56 @@ class StateProcessor:
         self.memory_window = memory_window
         self.memory: Dict[str, List[Message]] = {}
 
+    def summarize_memory(self, agent_name: str):
+        """
+        Summarizes the oldest messages in the memory for the specified agent.
+        """
+        if agent_name not in self.memory or len(self.memory[agent_name]) < self.memory_window:
+            return
+
+        # Select messages to summarize (e.g., the oldest half)
+        summarize_count = self.memory_window // 2
+        messages_to_summarize = self.memory[agent_name][:summarize_count]
+        remaining_messages = self.memory[agent_name][summarize_count:]
+
+        if not messages_to_summarize:
+            return
+
+        # Create a prompt for the LLM to summarize the conversation
+        conversation_text = "\n".join([f"{msg.role}: {msg.output}" for msg in messages_to_summarize])
+        prompt = f"""Please summarize the following conversation history into a concise paragraph. This summary will be used as a memory for an AI agent, so it should retain key decisions, outcomes, and important pieces of information. Do not add any introductory or concluding remarks, just provide the summary text.\n\nConversation History:\n---\n{conversation_text}\n---\nSummary:"""
+
+        # Call the LLM to get the summary
+        summary_text = self.llm.get_text_response(prompt)
+
+        # Create a new summary message
+        summary_message = Message(
+            role="system",
+            output=f"<summary_of_previous_turns>\n{summary_text}\n</summary_of_previous_turns>",
+            thinking="This is a summary of previous conversation turns."
+        )
+
+        # Replace the summarized messages with the new summary message
+        self.memory[agent_name] = [summary_message] + remaining_messages
+
     def add_message(self, agent_name: str, message: Message):
         """
         Adds a message to the memory of the specified agent.
         """
         if agent_name not in self.memory:
             self.memory[agent_name] = []
+        
         self.memory[agent_name].append(message)
+
+        # Trigger summarization when memory grows beyond the window
         if len(self.memory[agent_name]) > self.memory_window:
-            self.memory[agent_name].pop(0)
+            self.summarize_memory(agent_name)
+
+    def get_memory(self, agent_name: str) -> List[Message]:
+        """
+        Gets the current memory for the specified agent.
+        """
+        return self.memory.get(agent_name, [])
 
     def _normalize_agent_name(self, agent_name: str) -> str:
         """

@@ -1,14 +1,10 @@
-import copy
-import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.config import Config
 from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.tools.code_tool import run_code
 from MetaFlow.tools.file_tool import file_tree, list_directory, read_lines, write_file
-from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState, Message
 
 
@@ -21,7 +17,7 @@ class ProjectManagerAgent(LLMAgent):
         super().__init__("Project_Manager", config)
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str],
-        document_manager: DocumentManager) -> Message:
+        document_manager: DocumentManager) -> GeneralState:
         prompt = state.sub_task if state.sub_task else state.task
 
         inputs = self.get_prompt(
@@ -35,21 +31,21 @@ class ProjectManagerAgent(LLMAgent):
         response_text = self.llm.chat(inputs)
         self.logger.info(f"==========ProjectManagerAgent {self.agent_name} output: {response_text}")
 
-        message = self._parse_response(response_text, document_manager)
+        output_state = self._parse_response(response_text, document_manager)
 
 
-        return message
+        return GeneralState
 
 
 
-class CriticAgent(ActionAgent):
+class CriticAgent(LLMAgent):
     """
     The Critic agent evaluates the progress, quality, and cost of the project. 
     It provides feedback and suggestions to help the Project Manager adjust the plan.
     """
     def __init__(self, config: Config):
         # Define the list of tools for this agent
-        tools = [read_lines, write_file, list_directory]
+        tools = [read_lines, write_file, list_directory, run_code]
         super().__init__("Critic", config, tools)
 
 

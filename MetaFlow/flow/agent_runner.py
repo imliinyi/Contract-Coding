@@ -1,62 +1,49 @@
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from MetaFlow.agents.base_agent import BaseAgent
-from MetaFlow.flow.decision_space import logger
-from MetaFlow.utils.coding.python_executor import execute_code_get_return
-from MetaFlow.utils.math.get_predict import get_predict
-from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.config import Config
+from MetaFlow.flow.state_processor import StateProcessor
+from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.utils.state import GeneralState
+from MetaFlow.utils.log import get_logger
 
-
-class AgentRunner:
-    def __init__(self, agents: Dict[str, BaseAgent]):
+class AgentRunner: # This now acts as our AgentExecutor
+    def __init__(
+        self,
+        config: Config,
+        agents: Dict[str, BaseAgent],
+        state_processor: StateProcessor,
+        document_manager: DocumentManager,
+    ):
+        self.config = config
+        self.logger = get_logger(config.LOG_PATH)
         self.agents = agents
+        self.state_processor = state_processor
+        self.document_manager = document_manager
 
-    def _normalize_agent_name(self, agent_name: str, all_agents: List[str]) -> str:
-        """
-        Normalize the agent name to a registered name.
-        """
-        # Create a mapping from lowercase, underscore-removed names to original names
-        normalized_map = {re.sub(r'[^a-z0-9]', '', name.lower()): name for name in all_agents}
-        
-        # Normalize the input name
-        normalized_input = re.sub(r'[^a-z0-9]', '', agent_name.lower())
-        
-        return normalized_map.get(normalized_input, agent_name) # Return original if not found
-
-    def run(self, agent_name: str, state: GeneralState, test_cases: List[str],
-            next_available_agents: List[str]) -> Tuple[Message, str, str, Optional[Dict[str, Any]]]:
-        """
-        Run a single agent, process its output, and return the message, code, answer, and shared_context.
-        """
-        agent = self.agents.get(agent_name, None)
+    def run(
+        self, 
+        agent_name: str, 
+        state: GeneralState, 
+        test_cases: list, 
+        next_available_agents: list
+    ) -> GeneralState:
+        """Executes a single agent and returns the resulting state."""
+        agent = self.agents.get(agent_name)
         if not agent:
-            raise ValueError(f"Agent {agent_name} not found.")
+            self.logger.warning(f"Agent {agent_name} not found, skipping.")
+            state.output = f"Error: Agent {agent_name} not found."
+            state.next_agents = ["END"]
+            return state
 
-        logger.info(f"==========Running agent {agent_name}")
-        message, collaborative_document = agent._execute_agent(
+        # The agent execution is now a single, clean call.
+        # The agent itself handles memory, LLM calls, and parsing.
+        output_state = agent._execute_agent(
             state=state,
             test_cases=test_cases,
-            next_available_agents=next_available_agents
+            next_available_agents=next_available_agents,
+            document_manager=self.document_manager,
+            state_processor=self.state_processor,
         )
 
-        # Extract code from the message output
-        code_pattern = r'```python\n(.*?)```'
-        code_match = re.search(code_pattern, message.output, re.DOTALL)
-        code = code_match.group(1).strip() if code_match else ''
-
-        if code:
-            answer = execute_code_get_return(code)
-        else:
-            answer = get_predict(message.output)
-        if not answer:
-            answer = ""
-
-        # Normalize the next_agents names
-        if message.next_agents:
-            normalized_next_agents = [self._normalize_agent_name(name, list(self.agents.keys())) for name in message.next_agents]
-            message.next_agents = normalized_next_agents
-
-        # print(f"==========Agent {agent_name} output: {message.output + str(message.next_agents)}")
-
-        return message, code, answer, collaborative_document
+        return output_state

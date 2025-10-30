@@ -57,11 +57,17 @@ class MetaFlow:
         """
         agents = list(self.agents.keys())
         self.decision_space = DecisionSpace(agents, self.config)
-        self.graph_traverser = GraphTraverser(
+        self.agent_runner = AgentRunner(
             config=self.config,
             agents=self.agents,
-            decision_space=self.decision_space,
             state_processor=self.state_processor,
+            document_manager=self.document_manager
+        )
+        self.graph_traverser = GraphTraverser(
+            config=self.config,
+            agent_runner=self.agent_runner,
+            decision_space=self.decision_space,
+            state_processor=self.state_processor, 
             document_manager=self.document_manager
         )
         self.learner = Learner(self.config, self.decision_space, self.agents)
