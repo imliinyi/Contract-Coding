@@ -6,10 +6,11 @@ from langgraph.graph import END
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
 from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.flow.decision_space import logger
 from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.flow.state_processor import StateProcessor
 from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.utils.log import get_logger
+
 
 
 class GraphTraverser:
@@ -19,14 +20,15 @@ class GraphTraverser:
         agents: Dict[str, BaseAgent],
         decision_space: DecisionSpace,
         state_processor: StateProcessor,
-        document_manger: DocumentManager,
+        document_manager: DocumentManager,
     ):
         self.config = config
+        self.logger = get_logger(config.LOG_PATH)
         self.agents = agents
         self.decision_space = decision_space
         self.state_processor = state_processor
         self.termination_policy = self.config.TERMINATION_POLICY
-        self.document_manger = document_manger
+        self.document_manager = document_manager
 
     def sub_traverse(
         self,
@@ -145,6 +147,7 @@ class GraphTraverser:
                     next_available_agents=next_available_agents,
                     document_manager=self.document_manager,
                 )
+                # logger.info(f"======Current Document: {self.document_manager.get()}")
                 
                 output_state = self.state_processor.process_agent_output(
                     message=output_message,
@@ -157,7 +160,7 @@ class GraphTraverser:
                 # Add the output state to memory
                 self.state_processor.add_message(agent_name, output_message)
 
-                next_agents = output_message.next_agents
+                next_agents = output_state.message.next_agents
                 continuing_agents, is_terminating = self._parse_agent_output(next_agents)
                 
                 layer_outputs.append({

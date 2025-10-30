@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import ast
 import json
-import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -13,10 +12,9 @@ from MetaFlow.llm.llm import LLM
 from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.coding.python_executor import PyExecutor
+from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState, Message
 
-
-logger = logging.getLogger(__name__)
 
 class BaseAgent(ABC):
     """
@@ -26,6 +24,7 @@ class BaseAgent(ABC):
     def __init__(self, agent_name: str, config: Config):
         self.agent_name = agent_name
         self.config = config
+        self.logger = get_logger(config.LOG_PATH)
         self.llm = LLM(
             api_key=self.config.OPENAI_API_KEY,
             api_base=self.config.OPENAI_API_BASE_URL,
@@ -43,16 +42,16 @@ class BaseAgent(ABC):
     @staticmethod
     def validate_state(state: Message | None) -> bool:
         if not state:
-            logger.error("State is None")
+            self.logger.error("State is None")
             return False
         
         try:
             if not state.output:
-                logger.error("State output is empty")
+                self.logger.error("State output is empty")
                 return False
             return True
         except Exception as e:
-            logger.error(f"Error validating state: {e}")
+            self.logger.error(f"Error validating state: {e}")
             return False
 
     @staticmethod
@@ -74,18 +73,25 @@ class BaseAgent(ABC):
             next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
         available_agents = ', '.join(f"{agent_name}: {AGENT_DETAILS[agent_name]}, " for agent_name in next_available_agents if agent_name in AGENT_DETAILS)
         system_prompt = sys_prompt.format(
-            task_description=task_description,
-            agent_prompt=agent_prompt,
             available_agents=available_agents
         )
+        prompt_template = """
+        # User Overall Task
+        {task_description}
+
+        # Current Task
+        {prompt}
+        """
+
         return [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt},]},
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": agent_prompt},
+            {"role": "user", "content": prompt_template.format(task_description=task_description, prompt=prompt)}
         ]
 
     @abstractmethod
     def _execute_agent(self, state: GeneralState, test_cases: List[str], 
-        document_manger: DocumentManager, next_available_agents: List[str]) -> Message:
+        document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
@@ -100,9 +106,20 @@ class BaseAgent(ABC):
             action_json_str = action_match.group(1).strip()
             try:
                 actions = json.loads(action_json_str)
-                document_manager.execute_actions(actions)
+                
+                processed_actions = []
+                for action in actions:
+                    action_type = action.get('type')
+                    
+                    if action_type == 'add':
+                        action['agent_name'] = self.agent_name
+                    
+                    processed_actions.append(action)
+
+                if processed_actions:
+                    document_manager.execute_actions(processed_actions)
             except (json.JSONDecodeError, TypeError) as e:
-                logger.error(f"Failed to parse or execute document actions: {e}")
+                self.logger.error(f"Failed to parse or execute document actions: {e}")
 
     def _parse_response(self, response_text: str, document_manager: DocumentManager) -> Message:
         """
@@ -123,12 +140,17 @@ class BaseAgent(ABC):
         except (json.JSONDecodeError, AttributeError):
             task_requirements = {END: raw_output}
         
-        if isinstance(task_requirements, dict):
-            for key, value in task_requirements.items():
-                if not isinstance(value, str):
-                    task_requirements[key] = json.dumps(value, ensure_ascii=False)
+        # if isinstance(task_requirements, dict):
+        #     sanitized_task_requirements = {}
+        #     for key, value in task_requirements.items():
+        #         sanitized_key = re.sub(r'_\d+$', '', key)
+        #         if not isinstance(value, str):
+        #             value = json.dumps(value, ensure_ascii=False)
+        #             sanitized_task_requirements[sanitized_key] = value
+        #     task_requirements = sanitized_task_requirements
         
         next_agents = list(task_requirements.keys())
+        next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
 
         return Message(
             role=self.agent_name,

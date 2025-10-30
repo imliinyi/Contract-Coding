@@ -42,6 +42,8 @@ class Reflector:
                 abstract_skill = json.loads(json_str.strip())
 
                 if "skill_name" in abstract_skill and "sub_graph" in abstract_skill:
+                    if abstract_skill["skill_name"] is None or abstract_skill["skill_name"].strip().lower() == 'null':
+                        return None
                     return abstract_skill
 
                 # If the JSON is valid but missing required fields, add a feedback loop to the prompt
@@ -68,6 +70,11 @@ class Reflector:
 
         [Executed Task Trajectory Graph]
         This graph, in Mermaid.js format, shows the layered execution flow of a previous task. It includes the agents at each layer and the connections between them.
+
+        [Importance]
+        1. The skill name you have summarized cannot be included in existing agents. Current Existing Agents:{self.config.AGENT_SALARIES.keys()}.
+        2. The importance of this task is to identify the most core, reusable, and fully functional subgraph pattern from the given graph. 
+        3. You don't need to always provide new skills. If there are no good subgraphs in the running diagram, there is no need to summarize. You can set the skill name to null.
 
         ```mermaid
         {graph_representation}

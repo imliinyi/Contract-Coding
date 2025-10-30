@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.decision_space import logger
+from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.tools.file_tool import file_tree
+from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState, Message
 
 
@@ -16,15 +18,21 @@ class ActionAgent(BaseAgent):
     def __init__(self, agent_name: str, config: Config, tools: List[Dict[str, str]] = []):
         super().__init__(agent_name, config)
         self.tools = tools
+        self.logger = get_logger(self.config.LOG_PATH)
 
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], 
+        document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
         """
         A generic implementation that executes the agent's logic by calling the LLM.
         """
         # task_description = f"User Overall Task: {state.task}\nYour Current Sub-Task: {state.sub_task}"
         # Pre agent output: {state.message.output}\n
         prompt = f"""
-            Your Current Sub-Task: {state.sub_task}
+            Your Current Sub-Task: {state.sub_task},
+
+            Current Project Structure: {file_tree('.')}
+
+            Current Collaborative Document: {document_manager.get()}
         """
         inputs = self.get_prompt(
             task_description=state.task,
@@ -39,11 +47,11 @@ class ActionAgent(BaseAgent):
             messages=inputs,
             tools=self.tools
         )
-        logger.info(f"==========ActionAgent {self.agent_name} output: {raw_response}")
+        self.logger.info(f"==========ActionAgent {self.agent_name} output: {raw_response}")
 
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        message, _ = self._parse_response(raw_response)
+        message = self._parse_response(raw_response, document_manager)
 
         return message
 

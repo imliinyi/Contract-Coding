@@ -16,14 +16,14 @@ from MetaFlow.flow.state_processor import StateProcessor
 from MetaFlow.reflection.reflector import Reflector
 from MetaFlow.reflection.triggers import check_layer_revisit, check_long_path
 from MetaFlow.utils.state import GeneralState, Message
-
-logger = logging.getLogger(__name__)
+from MetaFlow.utils.log import get_logger
 
 
 class MetaFlow:
 
     def __init__(self, config: Config):
         self.config = config
+        self.logger = get_logger(config.LOG_PATH)
         self.agents : Dict[str, BaseAgent | CompositeAgent | None] = {END: None}
         self.start_agent : Optional[str] = None
         self.is_train = True
@@ -154,7 +154,7 @@ class MetaFlow:
 
         # Check if the new skill will cause a cycle
         if self._check_cycle(skill_name, new_skill['sub_graph']):
-            logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping learning.")
+            self.logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping learning.")
             return  # Cycle detected, skip learning
 
         composite_agent = CompositeAgent(
@@ -169,8 +169,8 @@ class MetaFlow:
 
         # Add the new skill to the decision space
         state = new_skill['sub_graph'][0][1]
-        entry_point = new_skill['skill_name']
-        self.decision_space.add_new_action(state, skill_name, entry_point)
+        # entry_point = new_skill['skill_name']
+        self.decision_space.add_new_action(state, skill_name)
         
     def register_agent(self, agent_name: str, agent: BaseAgent, is_start: bool = False) -> None:
         self.agents[agent_name] = agent
@@ -185,7 +185,7 @@ class MetaFlow:
         assert len(inputs) == len(test_cases), "Number of inputs must match number of test cases."
 
         results = []
-        logger.info(f"--- Training on {len(inputs)} samples ---")
+        self.logger.info(f"--- Training on {len(inputs)} samples ---")
         for i, (input_task, tests) in enumerate(zip(inputs, test_cases)):
             final_state, is_success = self._run_single_step(input_task, tests)
             results.append({
@@ -195,9 +195,9 @@ class MetaFlow:
                 'answer': final_state.answer,
                 'is_success': is_success,
             })
-            logger.info(f"--- Sample {i+1}/{len(inputs)} - Final Answer: {final_state.answer if final_state else 'N/A'} - Success: {is_success} ---")
+            self.logger.info(f"--- Sample {i+1}/{len(inputs)} - Final Answer: {final_state.answer if final_state else 'N/A'} - Success: {is_success} ---")
 
-        logger.info(f"--- Training Finished ---")
+        self.logger.info(f"--- Training Finished ---")
         return results
 
     def run(self, input_task: str, test_cases: List[str]) -> str:
@@ -208,7 +208,7 @@ class MetaFlow:
         if self.graph_traverser is None:
             self._init_decision_space()
         final_state, is_success = self._run_single_step(input_task, test_cases)
-        return final_state.answer
+        return final_state
 
     def find_all_paths(self, graph: Dict[str, List[str]], start: str, end: str) -> List[List[str]]:
         """

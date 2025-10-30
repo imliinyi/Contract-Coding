@@ -12,7 +12,7 @@ from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.flow.document_manager import DocumentManager
 
 
-class CompositeGraph(BaseModel):
+class CompositeGraph:
     """
     Represents the structure and execution of a pre-defined subgraph.
     """ 

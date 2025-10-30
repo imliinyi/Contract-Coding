@@ -1,9 +1,8 @@
 import collections.abc
-from enum import Enum
-import re
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+import logging
+from typing import Any, Dict
 
-
+logger = logging.getLogger(__name__)
 
 def _deep_merge(d1: Dict, d2: Dict) -> Dict:
     """
@@ -19,7 +18,6 @@ def _deep_merge(d1: Dict, d2: Dict) -> Dict:
             d1[k] = v
     return d1
 
-
 class DocumentManager:
     """
     Manages a global, collaborative document for a single workflow run.
@@ -32,27 +30,15 @@ class DocumentManager:
         """Returns a copy of the entire document."""
         return self._document.copy()
 
-    def _get_nested_item(self, data: Dict, path: str) -> Tuple[Optional[Dict], Optional[str]]:
-        """Helper to navigate to a nested dictionary path. Returns the parent dict and the final key."""
-        keys = path.split('.')
-        current_level = data
-        for key in keys[:-1]:
-            current_level = current_level.get(key)
-            if not isinstance(current_level, dict):
-                return None, None
-        return current_level, keys[-1]
-
-    def execute_actions(self, actions: List[Dict[str, Any]]):
+    def execute_actions(self, actions: list):
         """
-        Executes a list of document actions provided by an agent.
+        Executes a list of document actions based on the new role-oriented model.
 
-        :param actions: A list of action dictionaries.
-                        Each action is a dict with 'type' and other parameters.
-                        e.g.,
+        :param actions: A list of action dictionaries, e.g.,
                         [
-                          {"type": "update", "data": {"key": "value"}},
-                          {"type": "delete", "path": "key.to.delete"},
-                          {"type": "delete_by_pattern", "pattern": "temp_.*"}
+                          {"type": "add", "agent_name": "Frontend_Engineer", "content": "New UI component..."},
+                          {"type": "update", "agent_name": "Backend_Engineer", "content": {"api_spec": ...}},
+                          {"type": "delete", "agent_name": "Old_Agent"}
                         ]
         """
         if not isinstance(actions, list):
@@ -60,36 +46,29 @@ class DocumentManager:
 
         for action in actions:
             action_type = action.get("type")
-            
-            if action_type == "update":
-                data_to_update = action.get("data", {})
-                if isinstance(data_to_update, dict):
-                    self._document = _deep_merge(self._document, data_to_update)
-            
-            elif action_type == "set":
-                path = action.get("path")
-                value = action.get("value")
-                if path:
-                    target, key = self._get_nested_item(self._document, path)
-                    if isinstance(target, dict) and key:
-                        target[key] = value
+            agent_name = action.get("agent_name")
+            content = action.get("content")
+
+            if not agent_name:
+                continue
+
+            if action_type == "add":
+                if agent_name not in self._document or self._document[agent_name] is None:
+                    self._document[agent_name] = content
+                elif isinstance(self._document.get(agent_name), dict) and isinstance(content, dict):
+                    self._document[agent_name] = _deep_merge(self._document[agent_name], content)
+                elif isinstance(self._document.get(agent_name), str) and isinstance(content, str):
+                    self._document[agent_name] += "\n" + content
+                else:
+                    # Fallback for incompatible types, treat as update
+                    self._document[agent_name] = content
+                logger.info(f"Added content to {agent_name}'s space.")
+
+            elif action_type == "update":
+                self._document[agent_name] = content
+                logger.info(f"Updated (overwrote) {agent_name}'s space.")
 
             elif action_type == "delete":
-                path = action.get("path")
-                if path:
-                    target, key = self._get_nested_item(self._document, path)
-                    if isinstance(target, dict) and key and key in target:
-                        del target[key]
-            
-            elif action_type == "delete_by_pattern":
-                pattern = action.get("pattern")
-                if pattern:
-                    # This implementation only supports top-level key deletion by pattern for safety and simplicity.
-                    # A full recursive search-and-delete could be implemented if needed.
-                    try:
-                        keys_to_delete = [k for k in self._document.keys() if re.match(pattern, k)]
-                        for k in keys_to_delete:
-                            del self._document[k]
-                    except re.error:
-                        # Ignore invalid regex patterns from the LLM
-                        pass
+                if agent_name in self._document:
+                    del self._document[agent_name]
+                    logger.info(f"Deleted {agent_name}'s space.")

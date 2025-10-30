@@ -11,16 +11,8 @@ from typing import Dict, List
 from langgraph.graph import END
 
 from MetaFlow.config import Config
+from MetaFlow.utils.log import get_logger
 
-
-logging.basicConfig(
-    filename=Config.LOG_PATH,
-    filemode='w',
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(name)s %(message)s'
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
 
 
 class DecisionSpace(ABC):
@@ -30,6 +22,7 @@ class DecisionSpace(ABC):
     def __init__(self, agents: List[str], config: Config) -> None:
         super().__init__()
         self.agents = agents
+        self.logger = get_logger(config.LOG_PATH)
         self.config = config
         self.learning_rate = config.LEARNING_RATE
         self.discount_factor = config.DISCOUNT_FACTOR
@@ -53,12 +46,13 @@ class DecisionSpace(ABC):
         """
         for state_name, actions in self.q_table.items():
             if action not in actions:
-                if actions:
-                    # avg_values = sum(actions.values()) / len(actions)
-                    # self.q_table[state_name][action] = avg_values
+                if state_name != state:
                     self.q_table[state_name][action] = self.q_table[state_name][state]
                 else:
-                    self.q_table[state_name][action] = 0
+                    avg_values = sum(actions.values()) / len(actions)
+                    self.q_table[state_name][action] = avg_values
+
+        self.logger.info(f"Add new action {action} to all states in the MetaFlow.")
 
         # For the new action, initialize with the average Q-value of existing actions
         if action not in self.q_table.keys():
@@ -163,7 +157,7 @@ class DecisionSpace(ABC):
             }
             f.write(json.dumps(record) + "\n")
 
-        logger.info(f"Q-table saved at {path}, exported to {jsonl_path}")
+        self.logger.info(f"Q-table saved at {path}, exported to {jsonl_path}")
 
     def load_q_table(self, path: str = "q_table.pkl"):
         """
@@ -176,7 +170,7 @@ class DecisionSpace(ABC):
             self.q_table = defaultdict(lambda: defaultdict(float), {
                 k: defaultdict(float, v) for k, v in loaded.items()
             })
-        logger.info(f"Q-table is loaded from {path}")
+        self.logger.info(f"Q-table is loaded from {path}")
 
     def update_from_experience(self, experiences: List[Dict[str, List[str]]]) -> None:
         """

@@ -5,11 +5,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.decision_space import logger
-from MetaFlow.tools.code_tool import run_code
-from MetaFlow.tools.file_tool import list_directory, read_file, write_file
-from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.tools.code_tool import run_code
+from MetaFlow.tools.file_tool import file_tree, list_directory, read_lines, write_file
+from MetaFlow.utils.log import get_logger
+from MetaFlow.utils.state import GeneralState, Message
 
 
 class ProjectManagerAgent(LLMAgent):
@@ -33,7 +33,7 @@ class ProjectManagerAgent(LLMAgent):
         )
 
         response_text = self.llm.chat(inputs)
-        logger.info(f"==========ProjectManagerAgent {self.agent_name} output: {response_text}")
+        self.logger.info(f"==========ProjectManagerAgent {self.agent_name} output: {response_text}")
 
         message = self._parse_response(response_text, document_manager)
 
@@ -49,7 +49,7 @@ class CriticAgent(ActionAgent):
     """
     def __init__(self, config: Config):
         # Define the list of tools for this agent
-        tools = [read_file, write_file, list_directory]
+        tools = [read_lines, write_file, list_directory]
         super().__init__("Critic", config, tools)
 
 

@@ -3,9 +3,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from MetaFlow.agents.base_agent import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.decision_space import logger
 from MetaFlow.flow.document_manager import DocumentManager
 from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.utils.log import get_logger
+
 
 
 class LLMAgent(BaseAgent):
@@ -15,6 +16,7 @@ class LLMAgent(BaseAgent):
     """
     def __init__(self, agent_name: str, config: Config):
         super().__init__(agent_name, config)
+        self.logger = get_logger(self.config.LOG_PATH)
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], 
         document_manager: DocumentManager, next_available_agents: List[str]) -> Message:
@@ -39,7 +41,7 @@ class LLMAgent(BaseAgent):
         )
 
         response_text = self.llm.chat(inputs)
-        logger.info(f"==========LLMAgent {self.agent_name} output: {response_text}")
+        self.logger.info(f"==========LLMAgent {self.agent_name} output: {response_text}")
         # thinking = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         # output = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
         message = self._parse_response(response_text, document_manager)

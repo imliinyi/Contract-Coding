@@ -4,7 +4,7 @@ from MetaFlow.agents.action_agent import ActionAgent
 from MetaFlow.agents.llm_agent import LLMAgent
 from MetaFlow.config import Config
 from MetaFlow.tools.code_tool import run_code
-from MetaFlow.tools.file_tool import file_tree, list_directory, read_file, write_file
+from MetaFlow.tools.file_tool import file_tree, list_directory, write_file, read_lines
 from MetaFlow.utils.state import GeneralState, Message
 
 
@@ -14,7 +14,7 @@ class FrontendEngineerAgent(ActionAgent):
     It uses HTML, CSS, and JavaScript to create responsive and interactive web pages.
     """
     def __init__(self, config: Config):
-        tools = [run_code, read_file, write_file, list_directory]
+        tools = [run_code, read_lines, write_file, list_directory]
         super().__init__("Frontend_Engineer", config, tools)
 
 
@@ -24,7 +24,7 @@ class BackendEngineerAgent(ActionAgent):
     It uses server-side languages like Python, Java, or Node.js to build the application's server-side components. 
     """
     def __init__(self, config: Config):
-        tools = [run_code, read_file, write_file, list_directory]
+        tools = [run_code, read_lines, write_file, list_directory]
         super().__init__("Backend_Engineer", config, tools)
 
 
@@ -34,7 +34,7 @@ class AlgorithmEngineerAgent(ActionAgent):
     It uses mathematical, statistical, and programming skills to solve real-world problems and optimize system performance.
     """
     def __init__(self, config: Config):
-        tools = [run_code, read_file, write_file, list_directory]
+        tools = [run_code, read_lines, write_file, list_directory]
         super().__init__("Algorithm_Engineer", config, tools)
 
 
@@ -46,7 +46,7 @@ class CodeReviewerAgent(ActionAgent):
     """
     def __init__(self, config: Config):
         # Define the list of tools for this agent
-        tools = [run_code, read_file, write_file, list_directory]
+        tools = [run_code, read_lines, write_file, list_directory]
         super().__init__("Code_Reviewer", config, tools)
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], next_available_agents: List[str]) -> Message:
