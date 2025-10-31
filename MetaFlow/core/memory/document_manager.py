@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
 def _deep_merge(d1: Dict, d2: Dict) -> Dict:
     """
     Recursively merges two dictionaries.
@@ -17,6 +18,7 @@ def _deep_merge(d1: Dict, d2: Dict) -> Dict:
         else:
             d1[k] = v
     return d1
+
 
 class DocumentManager:
     """

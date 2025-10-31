@@ -5,21 +5,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.graph import END
 
-from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.composite_graph import CompositeAgent, CompositeGraph
-from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.flow.document_manager import DocumentManager
-from MetaFlow.flow.graph_traverser import GraphTraverser
-from MetaFlow.flow.learner import Learner
-from MetaFlow.flow.state_processor import StateProcessor
+from MetaFlow.core.decision_space.decision_space import DecisionSpace
+from MetaFlow.core.graph.composer import CompositeAgent
+from MetaFlow.core.graph.traverser import GraphTraverser
+from MetaFlow.core.memory.document_manager import DocumentManager
+from MetaFlow.core.memory.memory_processor import MemoryProcessor
+from MetaFlow.orchestration.learner import Learner
+from MetaFlow.orchestration.runner import AgentRunner
 from MetaFlow.reflection.reflector import Reflector
 from MetaFlow.reflection.triggers import check_layer_revisit, check_long_path
-from MetaFlow.utils.state import GeneralState, Message
 from MetaFlow.utils.log import get_logger
+from MetaFlow.utils.state import GeneralState
 
 
-class MetaFlow:
+class Engine:
 
     def __init__(self, config: Config):
         self.config = config
@@ -27,9 +28,9 @@ class MetaFlow:
         self.agents : Dict[str, BaseAgent | CompositeAgent | None] = {END: None}
         self.start_agent : Optional[str] = None
         self.is_train = True
-        self.termination_policy = self.config.TERMINATION_POLICY
+        self.termination_policy = config.TERMINATION_POLICY
 
-        self.state_processor = StateProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
+        self.memory_processor = MemoryProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
         self.decision_space: Optional[DecisionSpace] = None
         self.graph_traverser: Optional[GraphTraverser] = None
         self.learner: Optional[Learner] = None
@@ -46,9 +47,11 @@ class MetaFlow:
         return GeneralState(
             task=input,
             sub_task="",
-            code="",
-            answer="",
-            message=Message(role="user", thinking="", output="", next_agents=[self.start_agent], task_requirements={self.start_agent: input}),
+            role="user",
+            thinking="",
+            output="",
+            next_agents=[self.start_agent],
+            task_requirements={self.start_agent: input}
         )
 
     def _init_decision_space(self) -> None:
@@ -57,19 +60,22 @@ class MetaFlow:
         """
         agents = list(self.agents.keys())
         self.decision_space = DecisionSpace(agents, self.config)
+
         self.agent_runner = AgentRunner(
             config=self.config,
             agents=self.agents,
-            state_processor=self.state_processor,
+            memory_processor=self.memory_processor,
             document_manager=self.document_manager
         )
+
         self.graph_traverser = GraphTraverser(
             config=self.config,
             agent_runner=self.agent_runner,
             decision_space=self.decision_space,
-            state_processor=self.state_processor, 
+            memory_processor=self.memory_processor, 
             document_manager=self.document_manager
         )
+
         self.learner = Learner(self.config, self.decision_space, self.agents)
 
     def _check_cycle(self, new_skill_name: str, sub_graph: List[Tuple[str, str]]) -> bool:
@@ -80,7 +86,7 @@ class MetaFlow:
         for agent_name, agent in self.agents.items():
             if isinstance(agent, CompositeAgent):
                 # Add dependencies from composite agent to its sub-agents
-                for _, target_agent in agent.composite_graph.sub_graph:
+                for _, target_agent in agent.sub_graph:
                     if target_agent != END:
                         dependencies[agent_name].append(target_agent)
 

@@ -2,8 +2,8 @@ from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 from MetaFlow.config import Config
-from MetaFlow.agents.base_agent import BaseAgent
-from MetaFlow.flow.decision_space import DecisionSpace
+from MetaFlow.agents.base import BaseAgent
+from MetaFlow.core.decision_space.decision_space import DecisionSpace
 from MetaFlow.utils.state import GeneralState
 
 

@@ -1,9 +1,9 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-from MetaFlow.agents.base_agent import BaseAgent
+from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.flow.state_processor import StateProcessor
-from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.core.memory.memory_processor import MemoryProcessor
+from MetaFlow.core.memory.document_manager import DocumentManager   
 from MetaFlow.utils.state import GeneralState
 from MetaFlow.utils.log import get_logger
 
@@ -12,13 +12,13 @@ class AgentRunner: # This now acts as our AgentExecutor
         self,
         config: Config,
         agents: Dict[str, BaseAgent],
-        state_processor: StateProcessor,
+        memory_processor: MemoryProcessor,
         document_manager: DocumentManager,
     ):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.agents = agents
-        self.state_processor = state_processor
+        self.memory_processor = memory_processor
         self.document_manager = document_manager
 
     def run(
@@ -43,7 +43,7 @@ class AgentRunner: # This now acts as our AgentExecutor
             test_cases=test_cases,
             next_available_agents=next_available_agents,
             document_manager=self.document_manager,
-            state_processor=self.state_processor,
+            memory_processor=self.memory_processor,
         )
 
         return output_state

@@ -1,16 +1,15 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from langgraph.graph import END
 
-from MetaFlow.flow.agent_runner import AgentRunner
 from MetaFlow.config import Config
-from MetaFlow.flow.decision_space import DecisionSpace
-from MetaFlow.flow.document_manager import DocumentManager
-from MetaFlow.flow.state_processor import StateProcessor
-from MetaFlow.utils.state import GeneralState
+from MetaFlow.core.decision_space.decision_space import DecisionSpace
+from MetaFlow.core.memory.document_manager import DocumentManager
+from MetaFlow.core.memory.memory_processor import MemoryProcessor
+from MetaFlow.orchestration.runner import AgentRunner
 from MetaFlow.utils.log import get_logger
-
+from MetaFlow.utils.state import GeneralState
 
 
 class GraphTraverser:
@@ -19,14 +18,14 @@ class GraphTraverser:
         config: Config,
         agent_runner: AgentRunner,
         decision_space: DecisionSpace,
-        state_processor: StateProcessor,
+        memory_processor: MemoryProcessor,
         document_manager: DocumentManager,
     ):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.agent_runner = agent_runner
         self.decision_space = decision_space
-        self.state_processor = state_processor
+        self.memory_processor = memory_processor
         self.termination_policy = self.config.TERMINATION_POLICY
         self.document_manager = document_manager
 
@@ -74,7 +73,7 @@ class GraphTraverser:
                 )
                 
                 successors = forward_graph.get(agent_name, [])
-                task_reqs = output_state['task_requirements'] 
+                task_reqs = output_state.task_requirements 
                 for successor in successors:
                     # Record the execution trace
                     execution_trace.append((agent_name, successor, 0.0))
@@ -84,14 +83,14 @@ class GraphTraverser:
                     else:
                         # Collect the output state for the successor agent
                         sub_task = task_reqs.get(successor, '')
-                        new_state = output_state.copy()
-                        new_state['sub_task'] = sub_task
+                        new_state = output_state.model_copy()
+                        new_state.sub_task = sub_task
                         next_layer_inputs[successor].append(new_state)
 
             next_layer_states = {}
             for agent_name, states in next_layer_inputs.items():
                 if len(states) > 1:
-                    merged_state = self.state_processor.merge_memory(states)
+                    merged_state = self.memory_processor.merge_memory(states)
                     next_layer_states[agent_name] = merged_state
                 else:
                     next_layer_states[agent_name] = states[0]
@@ -124,6 +123,7 @@ class GraphTraverser:
                 remaining_agents.remove(agent_name)
                 print(f"--- Remaining Agents in Current Layer: {remaining_agents} ---")
 
+                next_available_agents = self.decision_space.get_available_agents(agent_name)
                 output_state = self.agent_runner.run(
                     agent_name=agent_name,
                     state=state, 
@@ -132,7 +132,7 @@ class GraphTraverser:
                 )
 
                 # Add the output state to memory
-                self.state_processor.add_message(agent_name, output_state)
+                self.memory_processor.add_message(agent_name, output_state)
 
                 next_agents = output_state.next_agents
                 continuing_agents, is_terminating = self._parse_agent_output(next_agents)
@@ -163,7 +163,7 @@ class GraphTraverser:
                 continuing_agents = output['continuing_agents']
                 output_state = output['output_state']
 
-                success_rate = [self.agents[agent].success_rate if agent in self.agents and self.agents[agent] is not None else 1 for agent in next_agents]
+                success_rate = [self.agent_runner.agents[agent].success_rate if agent in self.agent_runner.agents and self.agent_runner.agents[agent] is not None else 1 for agent in next_agents]
                 group_reward = self.decision_space.calculate_group_reward(
                     current_state=agent_name, 
                     action_group=next_agents, 
@@ -194,17 +194,17 @@ class GraphTraverser:
                 # edge_rewards.append(edge_reward)
                 for cont_n in continuing_agents:
                     # Create a new state for each downstream agent with its specific sub-task
-                    task_reqs = output_state['task_requirements']
-                    sub_task = task_reqs.get(cont_n, output_state['sub_task'])
-                    new_state_for_next_agent = output_state.copy()
-                    new_state_for_next_agent['sub_task'] = sub_task
+                    task_reqs = output_state.task_requirements
+                    sub_task = task_reqs.get(cont_n, output_state.sub_task)
+                    new_state_for_next_agent = output_state.model_copy()
+                    new_state_for_next_agent.sub_task = sub_task
                     next_level_agents[cont_n].append(new_state_for_next_agent)
 
             if learn_terminating_only and self.termination_policy != 'all':
                 break
 
             next_level_agents = {
-                agent_name: self.state_processor.merge_memory(states)
+                agent_name: self.memory_processor.merge_memory(states)
                 for agent_name, states in next_level_agents.items()
             }
             if not next_level_agents:

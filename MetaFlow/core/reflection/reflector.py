@@ -2,7 +2,7 @@ import json
 import re
 from typing import List, Tuple, Dict, Any
 
-from MetaFlow.llm.llm import LLM
+from MetaFlow.llm.client import LLM
 from MetaFlow.config import Config
 from MetaFlow.utils.state import GeneralState
 from MetaFlow.utils.graph_serializer import GraphSerializer

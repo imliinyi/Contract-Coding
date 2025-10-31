@@ -1,11 +1,9 @@
 from abc import ABC
 import json
-import re
 from typing import Any, Callable, Dict, List, Union
 
 from openai import AzureOpenAI
 
-from MetaFlow.tools.code_tool import run_code
 from MetaFlow.utils.log import get_logger
 
 logger = get_logger()

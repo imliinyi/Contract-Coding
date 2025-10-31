@@ -8,13 +8,14 @@ from langgraph.graph import END
 
 from MetaFlow.config import Config
 from MetaFlow.flow.document_manager import DocumentManager
-from MetaFlow.llm.llm import LLM
-from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.llm.client import LLM
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
+from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.utils.coding.python_executor import PyExecutor
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
-from MetaFlow.flow.state_processor import StateProcessor
+from MetaFlow.core.memory.memory_processor import MemoryProcessor
+
 
 
 class BaseAgent(ABC):
@@ -22,8 +23,9 @@ class BaseAgent(ABC):
     Abstract BaseAgent class for the DAGAgent.
     It defines the common interface for all agents.
     """
-    def __init__(self, agent_name: str, config: Config):
+    def __init__(self, agent_name: str, agent_prompt: str, custom_tools: Optional[List] = None, config: Config = None):
         self.agent_name = agent_name
+        self.agent_prompt = agent_prompt
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.llm = LLM(
@@ -35,13 +37,16 @@ class BaseAgent(ABC):
         )
         self.salaries: Dict[str, float] = self.config.AGENT_SALARIES
 
+        self.system_prompt = self.get_system_prompt()
+        self.custom_tools = custom_tools or []
+
         self.success = 0
         self.trails = 0
         self.success_rate = 0.0
         self.test_cases = None
 
     @staticmethod
-    def validate_state(state: Message | None) -> bool:
+    def validate_state(state: GeneralState | None) -> bool:
         if not state:
             self.logger.error("State is None")
             return False
@@ -63,17 +68,16 @@ class BaseAgent(ABC):
         return CORE_SYSTEM_PROMPT
 
     @staticmethod
-    def get_agent_prompt(agent_name: str) -> str:
+    def get_agent_prompt() -> str:
         """
         Get the agent prompt for the agent.
         """
-        return get_agent_prompt(agent_name)
+        return get_agent_prompt(self.agent_name)
 
-    @staticmethod
-    def get_prompt(task_description: str, sys_prompt: str, agent_prompt: str, prompt: str, 
+    def get_prompt(self, task_description: str, prompt: str, 
             next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
         available_agents = ', '.join(f"{agent_name}: {AGENT_DETAILS[agent_name]}, " for agent_name in next_available_agents if agent_name in AGENT_DETAILS)
-        system_prompt = sys_prompt.format(
+        system_prompt = self.system_prompt.format(
             available_agents=available_agents
         )
         prompt_template = """
@@ -86,13 +90,13 @@ class BaseAgent(ABC):
 
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "system", "content": agent_prompt},
+            {"role": "system", "content": self.agent_prompt},
             {"role": "user", "content": prompt_template.format(task_description=task_description, prompt=prompt)}
         ]
 
     @abstractmethod
     def _execute_agent(self, state: GeneralState, test_cases: List[str], 
-        document_manager: DocumentManager, state_processor: StateProcessor, next_available_agents: List[str]) -> Message:
+        document_manager: DocumentManager, memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
@@ -175,7 +179,7 @@ class BaseAgent(ABC):
 
         self.test_cases = results
 
-    def run_test(self, code: str) -> tuple[bool, str, Message]:
+    def run_test(self, code: str) -> tuple[bool, str, GeneralState]:
         is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
         return is_solved, feedback, state
 

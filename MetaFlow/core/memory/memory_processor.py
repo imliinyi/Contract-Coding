@@ -1,15 +1,13 @@
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from MetaFlow.config import Config
 from MetaFlow.flow.document_manager import DocumentManager
-from MetaFlow.llm.llm import LLM
-from MetaFlow.utils.coding.python_executor import execute_code_get_return
-from MetaFlow.utils.math.get_predict import get_predict
-from MetaFlow.utils.state import GeneralState, Message
+from MetaFlow.llm.client import LLM
+from MetaFlow.utils.state import GeneralState
 
 
-class StateProcessor:
+class MemoryProcessor:
     def __init__(self, config: Config, agents: List[str], memory_window: int=5):
         self.llm = LLM(
             deployment_name=config.OPENAI_DEPLOYMENT_NAME,
@@ -20,43 +18,45 @@ class StateProcessor:
         )
         self.agents = agents
         self.memory_window = memory_window
-        self.memory: Dict[str, List[Message]] = {}
+        self.memory: Dict[str, List[GeneralState]] = {}
 
     def summarize_memory(self, agent_name: str):
         """
-        Summarizes the oldest messages in the memory for the specified agent.
+        Summarizes the oldest states in the memory for the specified agent.
         """
         if agent_name not in self.memory or len(self.memory[agent_name]) < self.memory_window:
             return
 
-        # Select messages to summarize (e.g., the oldest half)
+        # Select states to summarize (e.g., the oldest half)
         summarize_count = self.memory_window // 2
-        messages_to_summarize = self.memory[agent_name][:summarize_count]
-        remaining_messages = self.memory[agent_name][summarize_count:]
+        states_to_summarize = self.memory[agent_name][:summarize_count]
+        remaining_states = self.memory[agent_name][summarize_count:]
 
-        if not messages_to_summarize:
+        if not states_to_summarize:
             return
 
         # Create a prompt for the LLM to summarize the conversation
-        conversation_text = "\n".join([f"{msg.role}: {msg.output}" for msg in messages_to_summarize])
+        conversation_text = "\n".join([f"{msg.role}: {msg.output}" for msg in states_to_summarize])
         prompt = f"""Please summarize the following conversation history into a concise paragraph. This summary will be used as a memory for an AI agent, so it should retain key decisions, outcomes, and important pieces of information. Do not add any introductory or concluding remarks, just provide the summary text.\n\nConversation History:\n---\n{conversation_text}\n---\nSummary:"""
 
         # Call the LLM to get the summary
         summary_text = self.llm.get_text_response(prompt)
 
         # Create a new summary message
-        summary_message = Message(
+        summary_message = GeneralState(
+            task=states_to_summarize[-1].task,
+            sub_task=states_to_summarize[-1].sub_task,
             role="system",
+            thinking="This is a summary of previous conversation turns.",
             output=f"<summary_of_previous_turns>\n{summary_text}\n</summary_of_previous_turns>",
-            thinking="This is a summary of previous conversation turns."
         )
 
-        # Replace the summarized messages with the new summary message
-        self.memory[agent_name] = [summary_message] + remaining_messages
+        # Replace the summarized states with the new summary message
+        self.memory[agent_name] = [summary_message] + remaining_states
 
-    def add_message(self, agent_name: str, message: Message):
+    def add_message(self, agent_name: str, message: GeneralState):
         """
-        Adds a message to the memory of the specified agent.
+        Adds a state to the memory of the specified agent.
         """
         if agent_name not in self.memory:
             self.memory[agent_name] = []
@@ -67,7 +67,7 @@ class StateProcessor:
         if len(self.memory[agent_name]) > self.memory_window:
             self.summarize_memory(agent_name)
 
-    def get_memory(self, agent_name: str) -> List[Message]:
+    def get_memory(self, agent_name: str) -> List[GeneralState]:
         """
         Gets the current memory for the specified agent.
         """
@@ -85,39 +85,40 @@ class StateProcessor:
         
         return normalized_map.get(normalized_input, agent_name) # Return original if not found
 
-    def process_agent_output(
-        self, 
-        message: Message, 
-        current_state: GeneralState
-    ) -> GeneralState:
-        """
-        Process the output of an agent, creating a new GeneralState for the next agent.
-        This includes extracting and executing code, getting an answer, and normalizing agent names.
-        """
-        # Extract code from the message output
-        code_pattern = r'```python\n(.*?)```'
-        code_match = re.search(code_pattern, message.output, re.DOTALL)
-        code = code_match.group(1).strip() if code_match else ''
+    # def process_agent_output(
+    #     self, 
+    #     agent_name: str, 
+    #     message: Message, 
+    #     current_state: GeneralState
+    # ) -> GeneralState:
+    #     """
+    #     Process the output of an agent, creating a new GeneralState for the next agent.
+    #     This includes extracting and executing code, getting an answer, and normalizing agent names.
+    #     """
+    #     # Extract code from the message output
+    #     code_pattern = r'```python\n(.*?)```'
+    #     code_match = re.search(code_pattern, message.output, re.DOTALL)
+    #     code = code_match.group(1).strip() if code_match else ''
 
-        if code:
-            answer = execute_code_get_return(code)
-        else:
-            answer = get_predict(message.output)
-        if not answer:
-            answer = current_state.answer or ""
+    #     if code:
+    #         answer = execute_code_get_return(code)
+    #     else:
+    #         answer = get_predict(message.output)
+    #     if not answer:
+    #         answer = current_state.answer or ""
 
-        # Normalize the next_agents names
-        if message.next_agents:
-            normalized_next_agents = [self._normalize_agent_name(name) for name in message.next_agents]
-            message.next_agents = normalized_next_agents
+    #     # Normalize the next_agents names
+    #     if message.next_agents:
+    #         normalized_next_agents = [self._normalize_agent_name(name) for name in message.next_agents]
+    #         message.next_agents = normalized_next_agents
         
-        return GeneralState(
-            task=current_state.task,
-            sub_task=current_state.sub_task,
-            code=code,
-            answer=answer,
-            message=message
-        )
+    #     return GeneralState(
+    #         task=current_state.task,
+    #         sub_task=current_state.sub_task,
+    #         code=code,
+    #         answer=answer,
+    #         message=message
+    #     )
 
     def format_state(self, state: GeneralState, document_manager: DocumentManager) -> str:
         """
@@ -208,38 +209,38 @@ class StateProcessor:
     #         next_agents=next_agents, 
     #         task_requirements=task_requirements
     #     )   
-    def _merge_messages(self, messages: List[Message]) -> Message:
-        """
-        Merges a list of messages from multiple upstream agents into a single message.
-        """
-        if not messages:
-            return Message(role="system", output="")
+    # def _merge_messages(self, messages: List[Message]) -> Message:
+    #     """
+    #     Merges a list of messages from multiple upstream agents into a single message.
+    #     """
+    #     if not messages:
+    #         return Message(role="system", output="")
 
-        if len(messages) == 1:
-            return messages[0]
+    #     if len(messages) == 1:
+    #         return messages[0]
 
-        separator = "\n\n---\n[Input from another agent]\n---\n\n"
+    #     separator = "\n\n---\n[Input from another agent]\n---\n\n"
         
-        merged_output = separator.join([msg.output for msg in messages if msg.output])
-        merged_thinking = separator.join([msg.thinking for msg in messages if msg.thinking])
-        merged_next_agents = []
-        merged_task_requirements = {}
-        for msg in messages:
-            if msg.next_agents:
-                merged_next_agents.extend(msg.next_agents)
-            if msg.task_requirements:
-                for key, value in msg.task_requirements.items():
-                    merged_task_requirements[key] = merged_task_requirements.get(key, "")  + '\n' + value
+    #     merged_output = separator.join([msg.output for msg in messages if msg.output])
+    #     merged_thinking = separator.join([msg.thinking for msg in messages if msg.thinking])
+    #     merged_next_agents = []
+    #     merged_task_requirements = {}
+    #     for msg in messages:
+    #         if msg.next_agents:
+    #             merged_next_agents.extend(msg.next_agents)
+    #         if msg.task_requirements:
+    #             for key, value in msg.task_requirements.items():
+    #                 merged_task_requirements[key] = merged_task_requirements.get(key, "")  + '\n' + value
 
-        merged_next_agents = list(set(merged_next_agents))
+    #     merged_next_agents = list(set(merged_next_agents))
 
-        return Message(
-            role="assistant",
-            thinking=merged_thinking,
-            output=merged_output,
-            next_agents=merged_next_agents,
-            task_requirements=merged_task_requirements
-        )
+    #     return Message(
+    #         role="assistant",
+    #         thinking=merged_thinking,
+    #         output=merged_output,
+    #         next_agents=merged_next_agents,
+    #         task_requirements=merged_task_requirements
+    #     )
 
     def merge_memory(self, states: List[GeneralState]) -> GeneralState:
         """
@@ -248,37 +249,50 @@ class StateProcessor:
         """
         if not states:
             return GeneralState(
-                    message=Message(role="system", thinking="", output=""), 
-                    sub_task="", 
-                    task="", 
-                    code="", 
-                    answer="",
+                    task="",
+                    sub_task="",
+                    role="system",
+                    thinking="",
+                    output="",
+                    next_agents=[],
+                    task_requirements=None
                 )
         
         if len(states) == 1:
             return states[0]
 
-        merged_messages = self._merge_messages([state.message for state in states])
-
         separator = "\n\n" + "="*20 + " MERGED INPUT " + "="*20 + "\n\n"
-        merged_code = separator.join(
-            f"# Code from Upstream Agent {i + 1}:\n{state.code}"
-            for i, state in enumerate(states) if state.code
-        )
         merged_sub_task = separator.join(
             f"# Sub Task from Upstream Agent {i + 1}:\n{state.sub_task}"
             for i, state in enumerate(states) if state.sub_task
         )
-        merged_answer = separator.join(
-            f"# Answer from Upstream Agent {i + 1}:\n{state.answer}"
-            for i, state in enumerate(states) if state.answer
+        merged_thinking = separator.join(
+            f"# Thinking from Upstream Agent {i + 1}:\n{state.thinking}"
+            for i, state in enumerate(states) if state.thinking
         )
+        merged_output = separator.join(
+            f"# Output from Upstream Agent {i + 1}:\n{state.output}"
+            for i, state in enumerate(states) if state.output
+        )
+        merged_next_agents = []
+        for state in states:
+            if state.next_agents:
+                merged_next_agents.extend(state.next_agents)
+        merged_next_agents = list(set(merged_next_agents))
+        merged_task_requirements = {}
+        for state in states:
+            if state.task_requirements:
+                for key, value in state.task_requirements.items():
+                    merged_task_requirements[key] = merged_task_requirements.get(key, "")  + '\n' + value
+
 
         # Create a new state with the merged message and code/answer
         return GeneralState(
+            task=states[0].task,
             sub_task=merged_sub_task,
-            task=states[0].task, 
-            code=merged_code,
-            answer=merged_answer,
-            message=merged_messages
+            role="system",
+            thinking=merged_thinking,
+            output=merged_output,
+            next_agents=merged_next_agents,
+            task_requirements=merged_task_requirements
         )
