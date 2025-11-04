@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import List
 
-from MetaFlow.agents.llm import LLMAgent
+from MetaFlow.agents.agent import LLMAgent
 from MetaFlow.config import Config
 from MetaFlow.prompt.agent_prompt import get_agent_prompt
 from MetaFlow.tools.code_tool import run_code

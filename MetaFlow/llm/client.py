@@ -1,8 +1,10 @@
 from abc import ABC
 import json
+import re
 from typing import Any, Callable, Dict, List, Union
 
 from openai import AzureOpenAI
+
 
 from MetaFlow.utils.log import get_logger
 
@@ -58,6 +60,7 @@ class LLM(ABC):
 
         max_iterations = 10
         current_iteration = 0
+        is_tool_call = False
 
         while current_iteration < max_iterations:
             current_iteration += 1
@@ -104,6 +107,7 @@ class LLM(ABC):
                     for tool_call in response_message.tool_calls:
                         function_name = tool_call.function.name
                         function_to_call = available_functions.get(function_name)
+                        is_tool_call = True
                         
                         if function_to_call:
                             try:
@@ -112,22 +116,14 @@ class LLM(ABC):
                                 
                                 # Execute the tool function
                                 function_response = function_to_call(**function_args)
-                                logger.info(f"Tool {function_name} execution result: {str(function_response)[:200]}..." if len(str(function_response)) > 200 else f"Tool {function_name} execution result: {function_response}")
-                                
+                                execution_result = str(function_response)
+                                logger.info(f"Tool {function_name} execution result: {execution_result[:200]}..." if len(execution_result) > 200 else f"Tool {function_name} execution result: {execution_result}")
+
                                 messages.append({
                                     "tool_call_id": tool_call.id,
                                     "role": "tool",
                                     "name": function_name,
-                                    "content": str(function_response)
-                                })
-                            except json.JSONDecodeError as e:
-                                error_msg = f"Tool {function_name} argument parsing error: {e}"
-                                logger.error(error_msg)
-                                messages.append({
-                                    "tool_call_id": tool_call.id,
-                                    "role": "tool",
-                                    "name": function_name,
-                                    "content": error_msg
+                                    "content": execution_result
                                 })
                             except Exception as e:
                                 error_msg = f"Tool {function_name} execution error: {e}"
@@ -139,7 +135,7 @@ class LLM(ABC):
                                     "content": error_msg
                                 })
                         else:
-                            error_msg = f"未找到工具 '{function_name}'"
+                            error_msg = f"Tool '{function_name}' not found."
                             logger.error(error_msg)
                             messages.append({
                                 "tool_call_id": tool_call.id,
@@ -148,15 +144,59 @@ class LLM(ABC):
                                 "content": error_msg
                             })
                 else:
-                    content = response_message.content or ""
-                    # logger.info(f"Received direct response: {content[:200]}..." if len(content) > 200 else f"Received direct response: {content}")
-                    return content
-                    
+                    # No more tool calls, proceed to final summarization
+                    messages.append({"role": response_message.role, "content": response_message.content})
+                    break
             except Exception as e:
                 error_msg = f"LLM call error: {e}"
                 logger.error(error_msg)
                 # Return a formatted error message to the user
                 return f"<thinking>LLM call error.</thinking><output>Error: {str(e)}</output><next_agents>['END']</next_agents><task_requirements>{{}}</task_requirements>"
 
-        logger.warning(f"Max tool call iterations reached: {max_iterations}")
-        return f'<thinking>Max tool call iterations reached ({max_iterations}).</thinking><output>Task may not be completed.</output><next_agents>["END"]</next_agents><task_requirements>{{"Critic": "Check if the task is completed."}}</task_requirements>'
+        # Final summarization step: Generate complete output based on the conversation history.
+        if is_tool_call:
+            try:
+                summary_instruction = {
+                    "role": "system",
+                    "content": """
+    Based on the tool executions and conversation history, provide a complete response that includes:
+    1. A brief summary of what was accomplished (<thinking> section)
+    2. A clear description of the work done (<output> section)  
+    3. Next steps for other agents (<task_requirements> section)
+    4. Any document updates if needed (<document_action> section)
+
+    Ensure your response follows the exact format requirements with all required sections.
+    """
+                }
+                messages.append(summary_instruction)
+
+                # Make final summarization call without tools
+                final_response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    messages=messages,
+                    timeout=60,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    extra_headers={"X-TT-LOGID": ""},
+                )
+
+                if hasattr(final_response, 'usage'):
+                    self.prompt_tokens += final_response.usage.prompt_tokens
+                    self.completion_tokens += final_response.usage.completion_tokens
+                    logger.info(f"Summarization Token Usage - Prompt: {final_response.usage.prompt_tokens}, Completion: {final_response.usage.completion_tokens}")
+
+                final_content = final_response.choices[0].message.content or ""
+                if not final_content.strip():
+                    logger.warning("Final summarization response is empty.")
+                    return "<thinking>LLM summarization error.</thinking><output>The summarization response was empty.</output><next_agents>['END']</next_agents><task_requirements>{{}}</task_requirements>"
+
+                if current_iteration >= max_iterations:
+                    logger.warning(f"Max tool call iterations reached: {max_iterations}")
+
+                return final_content
+
+            except Exception as e:
+                logger.error(f"Summarization call error: {e}")
+                return f"<thinking>LLM summarization error.</thinking><output>Error: {str(e)}</output><next_agents>['END']</next_agents><task_requirements>{{}}</task_requirements>"
+
+        return response_message.content

@@ -17,9 +17,9 @@ AGENT_PROMPTS = {
         "role": "You are the Canonizer, the sole guardian and publisher of the project's single source of truth.",
         "principles": [
             "**Holistic Review**: Review the original request, all workspace files, and the entire Collaborative Document.",
-            "**Verify Detail**: You MUST check that the 'detailed_plan' in the document is sufficiently detailed and comprehensive. If it is brief or high-level, you MUST delegate back to the `Project_Manager` to elaborate.",
+            "**Verify Detail**: You MUST check that the Collaborative Document is sufficiently detailed and comprehensive. If it is brief or high-level, you MUST delegate back to the `Project_Manager` to elaborate.",
             "**Verify Document Sync**: Check that the `project_structure` in the document accurately reflects the files in the workspace.",
-            "**Verify Integration**: If an 'INTEGRATION' task was performed, verify that the backend correctly serves the frontend.",
+            "**Verify Integration**: Check whether there are errors or omissions in the front-end and backend linkage, with a focus on whether the backend file renders the frontend HTML.",
             "**Promulgate the Canon**: Use the `update` action to correct any inaccuracies in the collaborative document.",
             "**Delegate Correctively**: Issue new, precise tasks to fix any found issues."
         ],
@@ -38,21 +38,22 @@ AGENT_PROMPTS = {
     "Frontend_Engineer": {
         "role": "You are a Frontend Engineering specialist, focused on UI/UX and client-side logic.",
         "principles": [
-            "**Read the Detailed Plan**: Your work MUST be based on the `detailed_plan` and `api_contract` in the `Collaborative Document`.",
+            "**Read the Detailed Plan**: Your work MUST refer to the content of the `Collaborative Document` to understand the project requirements and design.",
             "**Code First, Be Concise**: Your primary output MUST be working code files. Create only the essential files for functionality.",
             "**Update the Document**: After successfully writing file(s), you MUST use the `update` document action to add the file paths you created to the `project_structure` section of the `Project_Manager`'s space.",
-            "**Delegate for Integration**: After your implementation is complete and the document is updated, you MUST delegate back to the `Project_Manager` to proceed with the integration step."
+            "**Handle Integration Task**: Your main task is to write frontend and call logic. If you don't have backend/algorithm files yet, you can name them yourself and place them in the collaboration document.",
+            "**Delegate for Integration**: After your implementation is complete and the document is updated, you MUST delegate back to the `Critic` to proceed with the integration step or to the `Code_Reviewer` to verify the code quality."
         ],
         "output_format": "You MUST use tool calls to write files. After tool calls, your response MUST contain a `<document_action>` to update the project structure, and a `<task_requirements>` block delegating back to the Project_Manager."
     },
     "Backend_Engineer": {
         "role": "You are a Backend Engineering specialist, focused on APIs, data, and server-side logic.",
         "principles": [
-            "**Read the Detailed Plan**: Your work MUST be based on the `detailed_plan` and `api_contract` in the `Collaborative Document`.",
-            "**Code First, Be Concise**: Your primary output MUST be working code files. Create only the essential files for functionality.",
+            "**Read the Detailed Plan**: Your work MUST refer to the content of the `Collaborative Document` to understand the project requirements and design.",
+            "**Code First, Be Concise**: Your primary output MUST be working code files. Create only the essential files for functionality. Please use Python to implement the code.",
             "**Update the Document**: After successfully writing file(s), you MUST use the `update` document action to add the file paths you created to the `project_structure` section of the `Project_Manager`'s space.",
-            "**Handle Integration Task**: If your task is 'INTEGRATION', your primary goal is to serve the frontend. Read the `project_structure` in the document to find the frontend files and configure your server to serve the main HTML file at the root URL ('/').",
-            "**Delegate for Review/Completion**: After implementation, delegate to the `Project_Manager` or `Critic` as instructed."
+            "**Handle Integration Task**: Your main task is to provide services for the frontend and render it. If you don't have a frontend file yet, you can name it yourself and place it in the collaboration document.",
+            "**Delegate for Review/Completion**: After implementation, delegate to the `Code_Reviewer` or `Critic` as instructed."
         ],
         "output_format": "You MUST use tool calls to write files. After tool calls, your response MUST contain a `<document_action>` to update the project structure, and a `<task_requirements>` block for the next step."
     },
@@ -125,11 +126,16 @@ def get_agent_prompt(agent_name: str) -> str:
     prompt = f"""
     {agent_info['role']}
 
-    # Your Guiding Principles
     {principles_str}
-
-    # Output Format Guidance
-    {agent_info['output_format']}
     """.strip()
+    # f"""
+    # {agent_info['role']}
+
+    # ## Your Guiding Principles
+    # {principles_str}
+
+    # ## Output Format Guidance
+    # {agent_info['output_format']}
+    # """.strip()
 
     return prompt

@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import ast
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -7,15 +6,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from langgraph.graph import END
 
 from MetaFlow.config import Config
-from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.core.memory.document_manager import DocumentManager
+from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.llm.client import LLM
-from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.coding.python_executor import PyExecutor
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
-from MetaFlow.core.memory.memory_processor import MemoryProcessor
-
 
 
 class BaseAgent(ABC):
@@ -29,13 +27,13 @@ class BaseAgent(ABC):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.llm = LLM(
-            api_key=self.config.OPENAI_API_KEY,
-            api_base=self.config.OPENAI_API_BASE_URL,
-            deployment_name=self.config.OPENAI_DEPLOYMENT_NAME,
-            max_tokens=self.config.OPENAI_API_MAX_TOKENS,
-            temperature=self.config.OPENAI_API_TEMPERATURE
+            api_key=config.OPENAI_API_KEY,
+            api_base=config.OPENAI_API_BASE_URL,
+            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
+            max_tokens=config.OPENAI_API_MAX_TOKENS,
+            temperature=config.OPENAI_API_TEMPERATURE
         )
-        self.salaries: Dict[str, float] = self.config.AGENT_SALARIES
+        self.salaries: Dict[str, float] = config.AGENT_SALARIES
 
         self.system_prompt = self.get_system_prompt()
         self.custom_tools = custom_tools or []
@@ -67,8 +65,7 @@ class BaseAgent(ABC):
         """
         return CORE_SYSTEM_PROMPT
 
-    @staticmethod
-    def get_agent_prompt() -> str:
+    def get_agent_prompt(self) -> str:
         """
         Get the agent prompt for the agent.
         """
@@ -90,13 +87,13 @@ class BaseAgent(ABC):
 
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "system", "content": self.agent_prompt},
+            {"role": "assistant", "content": f"Your Role Guideline: {self.agent_prompt}"},
             {"role": "user", "content": prompt_template.format(task_description=task_description, prompt=prompt)}
         ]
 
     @abstractmethod
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], 
-        document_manager: DocumentManager, memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], document_manager: DocumentManager, 
+        memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
@@ -148,15 +145,15 @@ class BaseAgent(ABC):
         next_agents = list(task_requirements.keys())
         next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
 
-        # Create a new state, preserving the original task and sub_task from the input state
-        new_state = current_state.model_copy(deep=True)
-        new_state.role = self.agent_name
-        new_state.thinking = thinking
-        new_state.output = raw_output
-        new_state.next_agents = next_agents
-        new_state.task_requirements = task_requirements
-
-        return new_state
+        return GeneralState(
+            task=current_state.task,
+            sub_task=current_state.sub_task,
+            role=self.agent_name,
+            thinking=thinking,
+            output=raw_output,
+            next_agents=next_agents,
+            task_requirements=task_requirements,
+        )
 
     def update_success_rate(self) -> None:
         """

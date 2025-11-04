@@ -2,7 +2,7 @@ import re
 from typing import Dict, List
 
 from MetaFlow.config import Config
-from MetaFlow.flow.document_manager import DocumentManager
+from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.llm.client import LLM
 from MetaFlow.utils.state import GeneralState
 
@@ -40,8 +40,8 @@ class MemoryProcessor:
         prompt = f"""Please summarize the following conversation history into a concise paragraph. This summary will be used as a memory for an AI agent, so it should retain key decisions, outcomes, and important pieces of information. Do not add any introductory or concluding remarks, just provide the summary text.\n\nConversation History:\n---\n{conversation_text}\n---\nSummary:"""
 
         # Call the LLM to get the summary
-        summary_text = self.llm.get_text_response(prompt)
-
+        summary_text = self.llm.chat([{"role": "user", "content": prompt}])
+        
         # Create a new summary message
         summary_message = GeneralState(
             task=states_to_summarize[-1].task,
