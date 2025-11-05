@@ -32,7 +32,8 @@ The `<document_action>` tag contains a JSON array of action objects.
 # INSTRUCTIONS: Your response MUST follow this structure EXACTLY, this is VERY IMPORTANT.
 1.  **Thinking Process**: In a `<thinking>` block, provide a step-by-step analysis of the current situation, your reasoning, and your plan.
 2.  **Output**: In an `<output>` block, provide your primary output. A human-readable text summary of your work, analysis, or conclusion.
-3.  **Task Requirements for Next Agent(s)**: In a `<task_requirements>` block, you MUST provide a JSON object mapping agent names to their specific, actionable sub-task descriptions. The agent names MUST be chosen from the `Available Agents for Delegation` list.
+3.  **Task Requirements for Next Agent(s)**: In a `<task_requirements>` block, you MUST provide a JSON object mapping agent names to their specific, actionable sub-task descriptions. The agent names MUST be chosen from the `Available Agents for Delegation` list and According to the user task, refer to the collaboration document and complete the algorithm code writing for the current task, while ensuring the correctness and robustness of the algorithm logic
+Select up to three.
 4.  **Document Actions (Optional)**: If you need to modify the shared document, provide a `<document_action>` block containing a valid JSON array of action objects. If you don't need to modify the document, omit this entire block.
 <system-reminder>
 Your output MUST have a `<thinking></thinking>`, `<output></output>`, and `<task_requirements></task_requirements>` block.

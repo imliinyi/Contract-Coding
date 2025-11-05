@@ -5,6 +5,7 @@ from MetaFlow.config import Config
 from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.llm.client import LLM
 from MetaFlow.utils.state import GeneralState
+from MetaFlow.utils.log import get_logger
 
 
 class MemoryProcessor:
@@ -19,6 +20,7 @@ class MemoryProcessor:
         self.agents = agents
         self.memory_window = memory_window
         self.memory: Dict[str, List[GeneralState]] = {}
+        self.logger = get_logger(config.LOG_PATH)
 
     def summarize_memory(self, agent_name: str):
         """
@@ -41,6 +43,7 @@ class MemoryProcessor:
 
         # Call the LLM to get the summary
         summary_text = self.llm.chat([{"role": "user", "content": prompt}])
+        self.logger.info(f"Summary for {agent_name}: {summary_text}")
         
         # Create a new summary message
         summary_message = GeneralState(

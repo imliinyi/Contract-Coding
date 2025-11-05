@@ -22,7 +22,7 @@ class CompositeAgent(BaseAgent):
         agents: Dict[str, BaseAgent],
         document_manager: DocumentManager
     ):
-        super().__init__(agent_name, config)
+        super().__init__(agent_name, '', [], config)
         self.decision_space = decision_space
         self.agents = agents
         self.sub_graph = sub_graph
