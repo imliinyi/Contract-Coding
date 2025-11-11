@@ -193,19 +193,22 @@ class Engine:
         """
         self.is_train = True
         assert len(inputs) == len(test_cases), "Number of inputs must match number of test cases."
+        if self.graph_traverser is None:
+            self._init_decision_space()
 
         results = []
         self.logger.info(f"--- Training on {len(inputs)} samples ---")
         for i, (input_task, tests) in enumerate(zip(inputs, test_cases)):
             final_state, is_success = self._run_single_step(input_task, tests)
+            # os.environ['WORKSPACE_ID'] = str(i + 1)
+            time.sleep(10) # Avoid too many requests to the server
             results.append({
                 'input_task': input_task,
                 'test_cases': tests,
                 'final_state': final_state,
-                'answer': final_state.answer,
                 'is_success': is_success,
             })
-            self.logger.info(f"--- Sample {i+1}/{len(inputs)} - Final Answer: {final_state.answer if final_state else 'N/A'} - Success: {is_success} ---")
+            self.logger.info(f"--- Sample {i+1}/{len(inputs)} - Success: {is_success} ---")
 
         self.logger.info(f"--- Training Finished ---")
         return results

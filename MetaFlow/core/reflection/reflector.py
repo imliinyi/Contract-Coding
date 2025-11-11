@@ -1,11 +1,12 @@
 import json
 import re
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Tuple
 
-from MetaFlow.llm.client import LLM
 from MetaFlow.config import Config
-from MetaFlow.utils.state import GeneralState
+from MetaFlow.llm.client import LLM
 from MetaFlow.utils.graph_serializer import GraphSerializer
+from MetaFlow.utils.log import get_logger
+from MetaFlow.utils.state import GeneralState
 
 
 class Reflector:
@@ -19,12 +20,14 @@ class Reflector:
             temperature=self.config.OPENAI_API_TEMPERATURE,
         )
         self.serializer = GraphSerializer()
+        self.logger = get_logger(config.LOG_PATH)
 
     def abstract_skill(self, all_layers: List[Dict[str, GeneralState]], trace_graph: List[Tuple[str, str, float]]) -> Dict[str, Any] | None:
         """
         Abstract the skill into a simpler form based on a rich graph representation, with a retry mechanism.
         """
         graph_representation = self.serializer.serialize_graph(all_layers, trace_graph)
+        self.logger.info(f"Graph representation:\n {graph_representation}\n")
         prompt = self._build_prompt(graph_representation)
 
         for _ in range(self.config.REFLECTOR_RETRY_TIMES):

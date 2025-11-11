@@ -99,13 +99,47 @@ class BaseAgent(ABC):
         """
         raise NotImplementedError("This method should be implemented by a subclass.")
 
+    def _parse_tag_with_json(self, tag_name: str, text: str, expected_type: Union[type, None] = None) -> Optional[str]:
+        """
+        A robust parser to extract JSON content from a specific tag, handling various formats.
+        It first finds the tag, then extracts the full JSON object/list from within.
+        """
+        # A simple regex to find the content between the tags, ignoring markdown noise
+        pattern = re.compile(rf"<{tag_name}>(.*?)</{tag_name}>", re.DOTALL)
+        match = pattern.search(text)
+
+        if not match:
+            # Fallback for markdown header format
+            pattern_md = re.compile(rf"###\s*<{tag_name}>\s*\n```json(.*?)\n```", re.DOTALL)
+            match = pattern_md.search(text)
+
+        if match:
+            content_str = match.group(1).strip()
+            
+            # Determine the start and end characters based on expected type or content
+            start_char, end_char = None, None
+            if expected_type is list or content_str.startswith('['):
+                start_char, end_char = '[', ']'
+            elif expected_type is dict or content_str.startswith('{'):
+                start_char, end_char = '{', '}'
+
+            if start_char:
+                start_pos = content_str.find(start_char)
+                last_pos = content_str.rfind(end_char)
+                if start_pos != -1 and last_pos > start_pos:
+                    return content_str[start_pos : last_pos + 1]
+
+            # If no specific JSON structure is found, return the raw content for simple cases
+            return content_str
+            
+        return None
+
     def _parse_document_action(self, response_text: str, document_manager: DocumentManager):
         """
         Parses the <document_action> tag and executes the actions using the DocumentManager.
         """
-        action_match = re.search(r'<document_action>(.*?)</document_action>', response_text, re.DOTALL)
-        if action_match:
-            action_json_str = action_match.group(1).strip()
+        action_json_str = self._parse_tag_with_json("document_action", response_text, expected_type=list)
+        if action_json_str:
             try:
                 actions = json.loads(action_json_str)
                 
@@ -132,15 +166,17 @@ class BaseAgent(ABC):
 
         thinking_match = re.search(r'<thinking>(.*?)</thinking>', response_text, re.DOTALL)
         output_match = re.search(r'<output>(.*?)</output>', response_text, re.DOTALL)
-        task_reqs_match = re.search(r'<task_requirements>(.*?)</task_requirements>', response_text, re.DOTALL)
-
+        
         thinking = thinking_match.group(1).strip() if thinking_match else ""
         raw_output = output_match.group(1).strip() if output_match else response_text
 
-        try:
-            task_requirements = json.loads(task_reqs_match.group(1).strip()) if task_reqs_match else {END: raw_output}
-        except (json.JSONDecodeError, AttributeError):
-            task_requirements = {END: raw_output}
+        task_requirements = {END: raw_output}
+        task_reqs_json_str = self._parse_tag_with_json("task_requirements", response_text, expected_type=dict)
+        if task_reqs_json_str:
+            try:
+                task_requirements = json.loads(task_reqs_json_str)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON format in <task_requirements> tag: {e}")
         
         next_agents = list(task_requirements.keys())
         next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]

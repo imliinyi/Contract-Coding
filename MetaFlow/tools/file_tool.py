@@ -2,7 +2,12 @@ import codecs
 import os
 from typing import List
 
-# Use relative path ./workspace as the workspace directory
+# Dynamically set WORKSPACE based on environment variable
+# workspace_id = os.environ.get('WORKSPACE_ID')
+# if workspace_id:
+#     WORKSPACE = f"./workspace{workspace_id}"
+# else:
+#     WORKSPACE = "./workspace"
 WORKSPACE = "./workspace"
 
 # Create the workspace directory (if it doesn't exist)
@@ -321,6 +326,86 @@ list_directory.openai_schema = {
                 }
             },
             "required": ["path"]
+        }
+    }
+}
+
+
+def update_file_lines(file_path: str, start_line: int, end_line: int, new_content: str) -> str:
+    """
+    Updates or replaces a specific range of lines in a file with new content.
+
+    :param file_path: The relative path to the file within the workspace.
+    :param start_line: The 1-indexed line number where the replacement should begin.
+    :param end_line: The 1-indexed line number where the replacement should end (inclusive).
+    :param new_content: The new content to insert in place of the specified lines.
+    :return: A string indicating the success or failure of the operation.
+    """
+    try:
+        full_path = _get_full_path(file_path)
+        if not os.path.isfile(full_path):
+            return f"Error: Path '{file_path}' is not a file or does not exist."
+
+        with open(full_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Convert 1-indexed line numbers to 0-indexed list indices
+        start_index = start_line - 1
+        end_index = end_line - 1
+
+        if not (0 <= start_index < len(lines)):
+            return f"Error: start_line {start_line} is out of bounds for file with {len(lines)} lines."
+        if not (0 <= end_index < len(lines)):
+            return f"Error: end_line {end_line} is out of bounds for file with {len(lines)} lines."
+        if start_index > end_index:
+            return f"Error: start_line ({start_line}) cannot be greater than end_line ({end_line})."
+
+        # Prepare the new content, splitting it into lines
+        new_lines = new_content.splitlines(keepends=True)
+        # If new_content is not empty and doesn't end with a newline, add one to the last line
+        if new_lines and not new_lines[-1].endswith(('\n', '\r', '\r\n')):
+            new_lines[-1] += '\n'
+
+
+        # Reconstruct the file content
+        new_file_content = lines[:start_index] + new_lines + lines[end_index + 1:]
+
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_file_content)
+
+        return f"Successfully updated lines {start_line} through {end_line} in file '{file_path}'."
+
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return f"An unexpected error occurred: {str(e)}"
+
+update_file_lines.openai_schema = {
+    "type": "function",
+    "function": {
+        "name": "update_file_lines",
+        "description": "Updates or replaces a specific range of lines in a file with new content. Path is relative to the workspace directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The relative path to the file within the workspace."
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "The 1-indexed line number where the replacement should begin."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "The 1-indexed line number where the replacement should end (inclusive)."
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "The new content to insert. Each line in the string will replace a corresponding range of lines in the file."
+                }
+            },
+            "required": ["file_path", "start_line", "end_line", "new_content"]
         }
     }
 }

@@ -117,7 +117,7 @@ class LLM(ABC):
                                 # Execute the tool function
                                 function_response = function_to_call(**function_args)
                                 execution_result = str(function_response)
-                                logger.info(f"Tool {function_name} execution result: {execution_result[:200]}..." if len(execution_result) > 200 else f"Tool {function_name} execution result: {execution_result}")
+                                # logger.info(f"Tool {function_name} execution result: {execution_result[:200]}..." if len(execution_result) > 200 else f"Tool {function_name} execution result: {execution_result}")
 
                                 messages.append({
                                     "tool_call_id": tool_call.id,

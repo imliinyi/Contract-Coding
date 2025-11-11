@@ -122,7 +122,7 @@ class DecisionSpace(ABC):
         """
         Decay epsilon.
         """
-        self.epsilon *= self.config.EPSILON_DECAY
+        self.epsilon *= self.config.DECAY_RATE
 
     def update_from_experience(self, experiences: List[Dict[str, List[str]]]) -> None:
         """

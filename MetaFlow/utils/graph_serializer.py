@@ -21,26 +21,26 @@ class GraphSerializer:
                 mermaid_string += f"        {agent_name}_{i}[{agent_name}]\n"
             mermaid_string += "    end\n"
 
-        if not all_layers:
-            return mermaid_string
+        # if not all_layers:
+        #     return mermaid_string
             
-        layers_sets = [set(layer.keys()) for layer in all_layers]
+        # layers_sets = [set(layer.keys()) for layer in all_layers]
 
-        for i, current_layer_set in enumerate(layers_sets):
-            # Stop if there is no next layer to connect to.
-            if i + 1 >= len(layers_sets):
-                continue
+        # for i, current_layer_set in enumerate(layers_sets):
+        #     # Stop if there is no next layer to connect to.
+        #     if i + 1 >= len(layers_sets):
+        #         continue
             
-            next_layer_set = layers_sets[i+1]
+        #     next_layer_set = layers_sets[i+1]
             
-            for source_agent in current_layer_set:
-                source_id = f"{source_agent}_{i}"
+        #     for source_agent in current_layer_set:
+        #         source_id = f"{source_agent}_{i}"
                 
-                # Find edges in the trace that originate from this specific agent instance.
-                for u, v, reward in execution_trace:
-                    if u == source_agent and v in next_layer_set:
-                        target_id = f"{v}_{i+1}"
-                        mermaid_string += f"    {source_id} -->|{reward:.2f}| {target_id}\n"
+        #         # Find edges in the trace that originate from this specific agent instance.
+        #         for u, v, reward in execution_trace:
+        #             if u == source_agent and v in next_layer_set:
+        #                 target_id = f"{v}_{i+1}"
+        #                 mermaid_string += f"    {source_id} -->|{reward:.2f}| {target_id}\n"
         
         return mermaid_string
 
@@ -64,21 +64,21 @@ class GraphSerializer:
                     mermaid_string += f"        {node_id}[{agent_name}]\n"
             mermaid_string += "    end\n"
 
-        processed_edges = set()
-        for i, layer in enumerate(all_layers):
-            for agent_name in layer.keys():
-                source_node_id = node_ids.get((agent_name, i))
+        # processed_edges = set()
+        # for i, layer in enumerate(all_layers):
+        #     for agent_name in layer.keys():
+        #         source_node_id = node_ids.get((agent_name, i))
                 
-                for u, v, reward in execution_trace:
-                    if u == agent_name:
-                        for j, next_layer in enumerate(all_layers):
-                            if v in next_layer and j > i:
-                                target_node_id = node_ids.get((v, j))
-                                if source_node_id and target_node_id:
-                                    edge = (source_node_id, target_node_id)
-                                    if edge not in processed_edges:
-                                        mermaid_string += f"    {source_node_id} -->|{reward:.2f}| {target_node_id}\n"
-                                        processed_edges.add(edge)
-                                break
+        #         for u, v, reward in execution_trace:
+        #             if u == agent_name:
+        #                 for j, next_layer in enumerate(all_layers):
+        #                     if v in next_layer and j > i:
+        #                         target_node_id = node_ids.get((v, j))
+        #                         if source_node_id and target_node_id:
+        #                             edge = (source_node_id, target_node_id)
+        #                             if edge not in processed_edges:
+        #                                 mermaid_string += f"    {source_node_id} -->|{reward:.2f}| {target_node_id}\n"
+        #                                 processed_edges.add(edge)
+        #                         break
         
         return mermaid_string

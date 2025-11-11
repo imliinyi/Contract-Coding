@@ -1,4 +1,6 @@
+import json
 from typing import Dict, List
+from pydantic import ValidationError
 
 from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
@@ -50,14 +52,22 @@ class LLMAgent(BaseAgent):
 
         # Combine memory with the fresh prompt
         inputs = memory_history + system_inputs
-
-        if self.custom_tools:
-            raw_response = self.llm.chat_with_tools(messages=inputs, tools=self.custom_tools)
-        else:
-            raw_response = self.llm.chat(inputs)
+        retry = 0
+        while retry < 3:
+            if self.custom_tools:
+                raw_response = self.llm.chat_with_tools(messages=inputs, tools=self.custom_tools)
+            else:
+                raw_response = self.llm.chat(inputs)
             
-        self.logger.info(f"==========LLMAgent {self.agent_name} output: {raw_response}")
+            self.logger.info(f"==========LLMAgent {self.agent_name} output: {raw_response}")
 
-        output_state = self._parse_response(raw_response, document_manager, state)
+            try:
+                output_state = self._parse_response(raw_response, document_manager, state)
+                # self.logger.info(f"==========Parsed Output State: {output_state}")
+                break
+            except (json.JSONDecodeError, ValidationError) as e:
+                self.logger.error(f"Attempt {retry + 1} failed with parsing error: {e}")
+                retry += 1
+                continue
 
         return output_state

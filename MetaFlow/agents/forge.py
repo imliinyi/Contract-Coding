@@ -5,7 +5,7 @@ from MetaFlow.agents.agent import LLMAgent
 from MetaFlow.config import Config
 from MetaFlow.prompt.agent_prompt import get_agent_prompt
 from MetaFlow.tools.code_tool import run_code
-from MetaFlow.tools.file_tool import file_tree, list_directory, read_lines, write_file
+from MetaFlow.tools.file_tool import file_tree, list_directory, read_lines, write_file, update_file_lines, read_file
 from MetaFlow.tools.math_tool import solve_math_expression
 from MetaFlow.tools.search_tool import search_web
 
@@ -35,7 +35,7 @@ class AgentForge:
         if capability.SEARCH:
             tools.append(search_web)
         if capability.FILE:
-            tools.extend([file_tree, read_lines, write_file, list_directory])
+            tools.extend([file_tree, read_lines, write_file, list_directory, read_file])
 
         return tools
 
