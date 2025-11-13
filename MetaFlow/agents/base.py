@@ -12,6 +12,7 @@ from MetaFlow.llm.client import LLM
 from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.coding.python_executor import PyExecutor
+from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
@@ -33,7 +34,8 @@ class BaseAgent(ABC):
             max_tokens=config.OPENAI_API_MAX_TOKENS,
             temperature=config.OPENAI_API_TEMPERATURE
         )
-        self.salaries: Dict[str, float] = config.AGENT_SALARIES
+        self.salary = config.AGENT_SALARY
+        # self.salaries: Dict[str, float] = config.AGENT_SALARIES
 
         self.system_prompt = self.get_system_prompt()
         self.custom_tools = custom_tools or []
@@ -170,7 +172,7 @@ class BaseAgent(ABC):
         thinking = thinking_match.group(1).strip() if thinking_match else ""
         raw_output = output_match.group(1).strip() if output_match else response_text
 
-        task_requirements = {END: raw_output}
+        task_requirements = None
         task_reqs_json_str = self._parse_tag_with_json("task_requirements", response_text, expected_type=dict)
         if task_reqs_json_str:
             try:
@@ -178,8 +180,11 @@ class BaseAgent(ABC):
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON format in <task_requirements> tag: {e}")
         
+        if not task_requirements:
+            raise EmptyTaskRequirementsError("The <task_requirements> tag is missing, empty, or invalid.")
+        
         next_agents = list(task_requirements.keys())
-        next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
+        # next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
 
         return GeneralState(
             task=current_state.task,

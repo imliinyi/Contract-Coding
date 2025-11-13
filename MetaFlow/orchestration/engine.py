@@ -179,6 +179,8 @@ class Engine:
 
         # Add the new skill to the decision space
         state = new_skill['sub_graph'][0][1]
+        if '_1' in state:
+            state = state.replace('_1', '')
         # entry_point = new_skill['skill_name']
         self.decision_space.add_new_action(state, skill_name)
         

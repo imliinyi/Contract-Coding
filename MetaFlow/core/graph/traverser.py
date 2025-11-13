@@ -123,7 +123,9 @@ class GraphTraverser:
                 remaining_agents.remove(agent_name)
                 print(f"--- Remaining Agents in Current Layer: {remaining_agents} ---")
 
-                next_available_agents = self.decision_space.get_available_agents(agent_name)
+                # next_available_agents = self.decision_space.get_available_agents(agent_name)
+                # TODO: Test
+                next_available_agents = self.decision_space.agents
                 output_state = self.agent_runner.run(
                     agent_name=agent_name,
                     state=state, 

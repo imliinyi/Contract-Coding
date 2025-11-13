@@ -24,14 +24,44 @@ class LLM(ABC):
         self.prompt_tokens = 0
         self.completion_tokens = 0
         
-    def chat(self, messages: Any) -> str:
+    def chat(self, messages: List[Dict[str, Any]]) -> str:
         response = self.client.chat.completions.create(
             model=self.deployment_name,
             max_tokens=self.max_tokens,
             messages=messages,
             timeout=30,
             temperature=self.temperature,
-            # response_format={"type": "json_object"},
+            extra_headers={"X-TT-LOGID": ""},
+        )
+
+        self.prompt_tokens = response.usage.prompt_tokens
+        self.completion_tokens = response.usage.completion_tokens
+
+        return response.choices[0].message.content
+
+    def chat_with_image(self, messages: List[Dict[str, Any]], images: List[str]) -> str:
+        if not images:
+            return self.chat(messages)
+
+        for image in images:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image}"
+                        }
+                    }
+                ]
+            })
+
+        response = self.client.chat.completions.create(
+            model=self.deployment_name,
+            max_tokens=self.max_tokens,
+            messages=messages,
+            timeout=60,
+            temperature=self.temperature,
             extra_headers={"X-TT-LOGID": ""},
         )
 

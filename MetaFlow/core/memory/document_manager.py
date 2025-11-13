@@ -26,11 +26,13 @@ class DocumentManager:
     Provides methods for agents to read, write, and modify shared knowledge.
     """
     def __init__(self):
-        self._document: Dict[str, Any] = {}
+        self._document: str = ""
 
-    def get(self) -> Dict[str, Any]:
-        """Returns a copy of the entire document."""
-        return self._document.copy()
+    def get(self) -> str:
+        """Returns a copy of the entire document with line numbers."""
+        lines = self._document.split('\n')
+        numbered_lines = [f"{i+1:3d}: {line}" for i, line in enumerate(lines)]
+        return '\n'.join(numbered_lines)
 
     def execute_actions(self, actions: list):
         """
@@ -40,7 +42,6 @@ class DocumentManager:
                         [
                           {"type": "add", "agent_name": "Frontend_Engineer", "content": "New UI component..."},
                           {"type": "update", "agent_name": "Backend_Engineer", "content": {"api_spec": ...}},
-                          {"type": "delete", "agent_name": "Old_Agent"}
                         ]
         """
         if not isinstance(actions, list):
@@ -48,29 +49,31 @@ class DocumentManager:
 
         for action in actions:
             action_type = action.get("type")
-            agent_name = action.get("agent_name")
             content = action.get("content")
 
-            if not agent_name:
-                continue
-
             if action_type == "add":
-                if agent_name not in self._document or self._document[agent_name] is None:
-                    self._document[agent_name] = content
-                elif isinstance(self._document.get(agent_name), dict) and isinstance(content, dict):
-                    self._document[agent_name] = _deep_merge(self._document[agent_name], content)
-                elif isinstance(self._document.get(agent_name), str) and isinstance(content, str):
-                    self._document[agent_name] += "\n" + content
+                line = action.get("line")
+                lines = self._document.split('\n')
+
+                if line < 1:
+                    line = 1
+                elif line > len(lines) + 1:
+                    line = len(lines) + 1
+
+                if not self._document.strip():
+                    self._document = content
                 else:
-                    # Fallback for incompatible types, treat as update
-                    self._document[agent_name] = content
-                logger.info(f"Added content to {agent_name}'s space.")
+                    content = content.split('\n')
+                    lines.insert(line - 1, *content)
+                    self._document = '\n'.join(lines)
+                
+                logger.info(f"Added content to document.")
 
             elif action_type == "update":
-                self._document[agent_name] = content
-                logger.info(f"Updated (overwrote) {agent_name}'s space.")
+                self._document = content
+                logger.info(f"Updated (overwrote) document.")
 
-            elif action_type == "delete":
-                if agent_name in self._document:
-                    del self._document[agent_name]
-                    logger.info(f"Deleted {agent_name}'s space.")
+            # elif action_type == "delete":
+            #     if agent_name in self._document:
+            #         del self._document[agent_name]
+            #         logger.info(f"Deleted {agent_name}'s space.")

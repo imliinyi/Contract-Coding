@@ -1,9 +1,8 @@
+from abc import ABC
 import json
 from typing import List, Union
-from openai import AzureOpenAI
-from abc import ABC
 
-from MetaFlow.utils.state import Message
+from openai import AzureOpenAI
 
 
 class VLM(ABC):
