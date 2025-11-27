@@ -27,7 +27,7 @@ class DecisionSpace(ABC):
         self.discount_factor = config.DISCOUNT_FACTOR
         self.epsilon = config.EPSILON
         self.entropy_weight = config.ENTROPY_WEIGHT
-        self.salaries = config.AGENT_SALARIES
+        self.salary = config.AGENT_SALARY
         self.q_table_path = config.Q_TABLE_PATH
         self.q_table = defaultdict(dict)
 
@@ -99,7 +99,7 @@ class DecisionSpace(ABC):
             return self.config.SUCCESS_REWARD - path_penalty
         else:
             repeated_penalty = self.config.REPEATED_PENALTY if action == current_state else 0
-            executed_penalty = self.salaries[action] * self.config.BASE_SALARY_MULTIPLIER
+            executed_penalty = self.salary * self.config.BASE_SALARY_MULTIPLIER
             success_reward = success_rate * self.config.SUCCESS_REWARD
             return success_reward - executed_penalty - repeated_penalty
 

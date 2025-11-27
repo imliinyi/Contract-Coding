@@ -1,4 +1,5 @@
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Tuple
 
 from langgraph.graph import END
@@ -59,21 +60,29 @@ class GraphTraverser:
             executed_layers += 1
             next_layer_inputs = defaultdict(list)
 
-            for agent_name, input_state in current_layer_states.items():
-                # output_state = self.agent_runner.run(
-                #     agent_name=agent_name, 
-                #     state=input_state, 
-                #     test_cases=test_cases, 
-                #     next_available_agents=[])
-                output_state = self.agent_runner.run(
-                    agent_name=agent_name, 
-                    state=input_state, 
-                    test_cases=test_cases, 
-                    next_available_agents=[]
-                )
-                
+            layer_outputs = {}
+            with ThreadPoolExecutor() as executor:
+                futures = {
+                    executor.submit(
+                        self.agent_runner.run,
+                        agent_name=agent_name,
+                        state=input_state,
+                        test_cases=test_cases,
+                        next_available_agents=[]
+                    ): agent_name
+                    for agent_name, input_state in current_layer_states.items()
+                }
+                for future in as_completed(futures):
+                    agent_name = futures[future]
+                    try:
+                        output_state = future.result()
+                        layer_outputs[agent_name] = output_state
+                    except Exception as e:
+                        self.logger.error(f"Agent {agent_name} failed with error: {e}")
+
+            for agent_name, output_state in layer_outputs.items():
                 successors = forward_graph.get(agent_name, [])
-                task_reqs = output_state.task_requirements 
+                task_reqs = output_state.task_requirements
                 for successor in successors:
                     # Record the execution trace
                     execution_trace.append((agent_name, successor, 0.0))
@@ -114,41 +123,44 @@ class GraphTraverser:
             layer_index = len(all_layers) - 1
 
             layer_outputs = []
-            # layer_futures = {}
             next_level_agents = defaultdict(list)
-            remaining_agents = list(current_level_agents.keys())
 
-            for agent_name, state in current_level_agents.items():
-                print(f"\n--- Current Agent: {agent_name} ---")
-                remaining_agents.remove(agent_name)
-                print(f"--- Remaining Agents in Current Layer: {remaining_agents} ---")
-
-                # next_available_agents = self.decision_space.get_available_agents(agent_name)
-                # TODO: Test
+            with ThreadPoolExecutor() as executor:
+                # The logic for getting next_available_agents is the same for all agents in the layer
                 next_available_agents = self.decision_space.agents
-                output_state = self.agent_runner.run(
-                    agent_name=agent_name,
-                    state=state, 
-                    test_cases=test_cases, 
-                    next_available_agents=next_available_agents
-                )
 
-                # Add the output state to memory
-                self.memory_processor.add_message(agent_name, output_state)
+                futures = {
+                    executor.submit(
+                        self.agent_runner.run,
+                        agent_name=agent_name,
+                        state=state,
+                        test_cases=test_cases,
+                        next_available_agents=next_available_agents
+                    ): agent_name
+                    for agent_name, state in current_level_agents.items()
+                }
 
-                next_agents = output_state.next_agents
-                continuing_agents, is_terminating = self._parse_agent_output(next_agents)
-                
-                layer_outputs.append({
-                    'agent_name': agent_name,
-                    'next_agents': next_agents,
-                    'continuing_agents': continuing_agents,
-                    'is_terminating': is_terminating,
-                    'output_state': output_state,
-                })
+                for future in as_completed(futures):
+                    agent_name = futures[future]
+                    try:
+                        print(f"\n--- Current Agent: {agent_name} ---")
+                        output_state = future.result()
 
-                # for cont_n in continuing_agents:
-                #     next_level_agents[cont_n].append(output_state)
+                        # Add the output state to memory
+                        self.memory_processor.add_message(agent_name, output_state)
+
+                        next_agents = output_state.next_agents
+                        continuing_agents, is_terminating = self._parse_agent_output(next_agents)
+
+                        layer_outputs.append({
+                            'agent_name': agent_name,
+                            'next_agents': next_agents,
+                            'continuing_agents': continuing_agents,
+                            'is_terminating': is_terminating,
+                            'output_state': output_state,
+                        })
+                    except Exception as e:
+                        self.logger.error(f"Agent {agent_name} failed with error: {e}")
 
             num_terminating = sum([1 for o in layer_outputs if o['is_terminating']])
             num_total = len(layer_outputs)
@@ -167,33 +179,19 @@ class GraphTraverser:
 
                 success_rate = [self.agent_runner.agents[agent].success_rate if agent in self.agent_runner.agents and self.agent_runner.agents[agent] is not None else 1 for agent in next_agents]
                 group_reward = self.decision_space.calculate_group_reward(
-                    current_state=agent_name, 
-                    action_group=next_agents, 
-                    path_len=layer_index, 
+                    current_state=agent_name,
+                    action_group=next_agents,
+                    path_len=layer_index,
                     success_rates=success_rate,
                     learn_terminating_only=learn_terminating_only)
 
-                # execution_graph.append((agent_name, next_agents))
-                # edge_reward = []
                 for next_agent in next_agents:
-                    # success_rate = self.agents[agent_name].success_rate if agent_name in self.agents else 1
-                    # reward = self.decision_space.calculate_reward(
-                    #     agent_name=agent_name, 
-                    #     next_agent=next_agent, 
-                    #     layer_index=layer_index, 
-                    #     success_rate=success_rate)
-                    # edge_reward.append(reward)
                     reward = group_reward.get(next_agent, 0)
                     execution_trace.append((agent_name, next_agent, reward))
 
-                    # if next_agent != END:
-                    #     next_level_agents[next_agent].append(output_state)
-                    # else:
-                    #     terminating_states.append(output_state)
                     if next_agent == END:
                         terminating_states.append(output_state)
-                
-                # edge_rewards.append(edge_reward)
+
                 for cont_n in continuing_agents:
                     # Create a new state for each downstream agent with its specific sub-task
                     task_reqs = output_state.task_requirements

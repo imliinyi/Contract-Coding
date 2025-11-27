@@ -10,8 +10,10 @@ from MetaFlow.utils.state import GeneralState
 
 
 class Reflector:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, agents: List[str]):
         self.config = config
+        self.agents = agents
+
         self.llm = LLM(
             api_key=self.config.OPENAI_API_KEY,
             api_base=self.config.OPENAI_API_BASE_URL,
@@ -75,7 +77,7 @@ class Reflector:
         This graph, in Mermaid.js format, shows the layered execution flow of a previous task. It includes the agents at each layer and the connections between them.
 
         [Importance]
-        1. The skill name you have summarized cannot be included in existing agents. Current Existing Agents:{self.config.AGENT_SALARIES.keys()}.
+        1. The skill name you have summarized cannot be included in existing agents. Current Existing Agents:{self.agents}.
         2. The importance of this task is to identify the most core, reusable, and fully functional subgraph pattern from the given graph. 
         3. You don't need to always provide new skills. If there are no good subgraphs in the running diagram, there is no need to summarize. You can set the skill name to null.
 

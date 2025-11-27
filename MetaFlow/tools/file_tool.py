@@ -136,7 +136,7 @@ def file_tree(path: str, max_depth: int = 3) -> str:
         for index, item in enumerate(items):
             item_path = os.path.join(path, item)
 
-            if item.startswith('.') or item in GLOBAL_GITIGNORE.splitlines():
+            if item.startswith('.') or item in GLOBAL_GITIGNORE.splitlines() or item == 'workspace':
                 continue
 
             is_last = index == len(items) - 1

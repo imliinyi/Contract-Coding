@@ -2,7 +2,7 @@ import collections.abc
 import logging
 from typing import Any, Dict
 
-logger = logging.getLogger(__name__)
+from MetaFlow.utils.log import get_logger
 
 
 def _deep_merge(d1: Dict, d2: Dict) -> Dict:
@@ -27,6 +27,7 @@ class DocumentManager:
     """
     def __init__(self):
         self._document: str = ""
+        self.logger = get_logger()
 
     def get(self) -> str:
         """Returns a copy of the entire document with line numbers."""
@@ -49,29 +50,31 @@ class DocumentManager:
 
         for action in actions:
             action_type = action.get("type")
-            content = action.get("content")
+            content = action.get("content", "")
 
             if action_type == "add":
                 line = action.get("line")
-                lines = self._document.split('\n')
-
-                if line < 1:
-                    line = 1
-                elif line > len(lines) + 1:
-                    line = len(lines) + 1
+                documents = self._document.split('\n')
 
                 if not self._document.strip():
                     self._document = content
-                else:
-                    content = content.split('\n')
-                    lines.insert(line - 1, *content)
-                    self._document = '\n'.join(lines)
+                    self.logger.info(f"Document was empty. Set content directly.")
+                    continue
+
+                if line < 1:
+                    line = 1
+                elif line > len(documents) + 1:
+                    line = len(documents) + 1
+
+                content = content.split('\n')
+                documents[line - 1:line - 1] = content
+                self._document = '\n'.join(documents)
                 
-                logger.info(f"Added content to document.")
+                self.logger.info(f"Added content to document.")
 
             elif action_type == "update":
                 self._document = content
-                logger.info(f"Updated (overwrote) document.")
+                self.logger.info(f"Updated (overwrote) document.")
 
             # elif action_type == "delete":
             #     if agent_name in self._document:

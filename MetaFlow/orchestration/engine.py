@@ -32,7 +32,7 @@ class Engine:
         self.decision_space: Optional[DecisionSpace] = None
         self.graph_traverser: Optional[GraphTraverser] = None
         self.learner: Optional[Learner] = None
-        self.reflector = Reflector(self.config)
+        self.reflector = Reflector(self.config, list(self.agents.keys()))
         self.document_manager = DocumentManager()
 
         if self.termination_policy not in ['any', 'majority', 'all']:

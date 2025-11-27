@@ -11,7 +11,6 @@ from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.llm.client import LLM
 from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
-from MetaFlow.utils.coding.python_executor import PyExecutor
 from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
@@ -217,9 +216,9 @@ class BaseAgent(ABC):
 
         self.test_cases = results
 
-    def run_test(self, code: str) -> tuple[bool, str, GeneralState]:
-        is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
-        return is_solved, feedback, state
+    # def run_test(self, code: str) -> tuple[bool, str, GeneralState]:
+    #     is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
+    #     return is_solved, feedback, state
 
 
     
