@@ -14,6 +14,9 @@ from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.prompt.agent_prompt import GUI_PROMPT
 from MetaFlow.tools.file_tool import file_tree
+from MetaFlow.tools.process_tool import start_process
+from MetaFlow.tools.backend_tool import start_backend_auto, start_static_preview
+from MetaFlow.tools.browser_tool import capture_with_console
 from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.gui.operator_utils import (
     exec_action_click,
@@ -93,13 +96,52 @@ class LLMAgent(BaseAgent):
         return output_state
 
 
+class StaticAuditAgent(BaseAgent):
+    """
+    LLM-driven static validation agent that asks the model to provide the target URL,
+    calls tools to start backend or static preview if needed, then captures screenshot + console logs.
+    """
+    def __init__(self, agent_name: str, agent_prompt: str, custom_tools: List[Dict[str, str]] = None, config: Config = None):
+        super().__init__(agent_name, agent_prompt, custom_tools, config)
+
+    def _execute_agent(self, state: GeneralState, test_cases: List[str], document_manager: DocumentManager, 
+        memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
+        prompt = f"""
+            Your Current Sub-Task: {state.sub_task}
+
+            Current Project Structure:\n {file_tree('.')}
+
+            Current Collaborative Document:\n {document_manager.get()}
+
+            IMPORTANT:
+            - Decide the target URL to validate (prefer Server URL, then Preview URL, else propose one).
+            - If backend is not running, call start_backend_auto; if it fails, call start_static_preview.
+            - Finally call capture_with_console(url) to obtain screenshot + console logs for static validation.
+            - Then provide a complete summary with <thinking>, <output>, and <task_requirements>.
+        """
+
+        inputs = self.get_prompt(
+            task_description=state.task,
+            prompt=prompt,
+            next_available_agents=next_available_agents
+        )
+
+        tools = self.custom_tools or [start_backend_auto, start_static_preview, capture_with_console]
+        raw_response = self.llm.chat_with_tools(messages=inputs, tools=tools)
+        self.logger.info(f"==========StaticAuditAgent {self.agent_name} output: {raw_response}")
+
+        output_state = self._parse_response(raw_response, document_manager, state)
+        return output_state
+
+
 class GUIAgent(BaseAgent):
     """
-    A concrete base agent for all agents that primarily rely on an LLM to generate a response.
-    It handles the logic of formatting prompts, calling the LLM, and parsing the standard output.
+    GUIAgent drives a browser to verify UI and interact with pages.
+    When initial navigation fails, it can invoke tools (e.g., start_process) to start the backend
+    and then retry navigation.
     """
-    def __init__(self, agent_name: str, agent_prompt: str, config: Config = None):
-        super().__init__(agent_name, agent_prompt, None, config)
+    def __init__(self, agent_name: str, agent_prompt: str, config: Config = None, custom_tools: List[Dict[str, str]] | None = None):
+        super().__init__(agent_name, agent_prompt, custom_tools, config)
 
     def _execute_agent(self, state: GeneralState, test_cases: List[str], document_manager: DocumentManager, 
         memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
@@ -108,6 +150,8 @@ class GUIAgent(BaseAgent):
         """
         prompt = f"""
             Your Current Sub-Task: {state.sub_task}
+
+            Current Project Structure:\n {file_tree('.')}
 
             Current Collaborative Document: {document_manager.get()}
             
@@ -124,13 +168,78 @@ class GUIAgent(BaseAgent):
 
         self.driver = webdriver.Chrome()
         self.driver.set_window_size(1920, 1080)
-        self.driver.get("http://localhost:5000")
+        try:
+            # Fast initial attempt
+            self.driver.set_page_load_timeout(6)
+            self.driver.get("http://localhost:5000")
+        except Exception as e:
+            # Attempt to start backend via tools and retry
+            self.logger.error(f"Initial navigation failed: {e}. Attempting to start backend via tools.")
+            if self.custom_tools:
+                startup_messages = [
+                    {
+                        "role": "system",
+                        "content": "You MUST start the backend server on port 5000 by calling the start_process tool. Prefer uvicorn for FastAPI (module:app) or python app.py for Flask). If unsure, call file_tree/list_directory/read_file to locate entrypoint. Reply only after tool execution."
+                    },
+                    {
+                        "role": "user",
+                        "content": "Start backend at http://localhost:5000 now, then confirm briefly."
+                    }
+                ]
+                try:
+                    _ = self.llm.chat_with_tools(messages=startup_messages, tools=self.custom_tools)
+                except Exception as tool_err:
+                    self.logger.error(f"Tool start_process invocation failed: {tool_err}")
+            # Fallback: programmatic discovery and direct start if tool path uncertain or not started
+            def _discover_backend_entry() -> tuple[str | None, str | None]:
+                candidates = [
+                    os.path.join('test', 'workspace', 'main.py'),
+                    os.path.join('test', 'workspace', 'backend.py'),
+                    os.path.join('test', 'backend', 'app.py'),
+                    'main.py', 'app.py', 'api.py', 'server.py'
+                ]
+                for p in candidates:
+                    if os.path.exists(p):
+                        try:
+                            with open(p, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            wd = os.path.dirname(p) if os.path.dirname(p) else '.'
+                            module = os.path.splitext(os.path.basename(p))[0]
+                            if 'FastAPI' in content:
+                                import re
+                                m = re.search(r"(\w+)\s*=\s*FastAPI\(", content)
+                                app_var = m.group(1) if m else 'app'
+                                cmd = f"uvicorn {module}:{app_var} --port 5000 --reload"
+                                return cmd, wd
+                            # Flask fallback
+                            if 'Flask(' in content:
+                                return f"python {os.path.basename(p)}", wd
+                            # Generic fallback to uvicorn
+                            return f"uvicorn {module}:app --port 5000 --reload", wd
+                        except Exception:
+                            continue
+                return None, None
+            cmd, wd = _discover_backend_entry()
+            if cmd:
+                try:
+                    res = start_process(command=cmd, working_directory=wd)
+                    self.logger.info(f"Backend start attempt: {res}")
+                except Exception as se:
+                    self.logger.error(f"Direct start_process failed: {se}")
+            # Retry navigation with short backoff
+            for _ in range(3):
+                time.sleep(3)
+                try:
+                    self.driver.get("http://localhost:5000")
+                    break
+                except Exception as e2:
+                    self.logger.error(f"Navigation retry failed: {e2}")
         try:
             self.driver.find_element(By.TAG_NAME, 'body').click()
-        except:
+        except Exception:
             pass
         self.driver.execute_script("""window.onkeydown = function(e) {if(e.keyCode == 32 && e.target.type != 'text' && e.target.type != 'textarea') {e.preventDefault();}};""")
-        time.sleep(5)
+        time.sleep(2)
 
         # Combine memory with the fresh prompt
         inputs = system_inputs

@@ -41,23 +41,30 @@ class DecisionSpace(ABC):
 
     def add_new_action(self, state: str, action: str) -> None:
         """
-        Adds a new action to all states in the Q-table, initializing with entry action's values.
+        Adds a new action to all states in the Q-table, initializing with
+        the template action's values when available, otherwise falling back
+        to the average of existing actions for that state.
+        Also appends the action to the available agents list if missing.
         """
+        # Ensure new action is tracked as an available agent
+        if action not in self.agents:
+            self.agents.append(action)
+
         for state_name, actions in self.q_table.items():
             if action not in actions:
-                if state_name != state:
-                    self.q_table[state_name][action] = self.q_table[state_name][state]
-                else:
-                    avg_values = sum(actions.values()) / len(actions)
-                    self.q_table[state_name][action] = avg_values
+                # Prefer copying the template action value if present
+                template_value = actions.get(state, None)
+                if template_value is None:
+                    # Fallback: use average of existing actions (or 0 if none)
+                    avg_values = (sum(actions.values()) / len(actions)) if len(actions) > 0 else 0.0
+                    template_value = avg_values
+                self.q_table[state_name][action] = template_value
 
         self.logger.info(f"Add new action {action} to all states in the MetaFlow.")
 
-        # For the new action, initialize with the average Q-value of existing actions
+        # For the new action row, initialize Q-values to 0 against existing agents
         if action not in self.q_table.keys():
-            self.q_table[action] = {
-                a: 0 for a in self.agents if a != action
-            }
+            self.q_table[action] = {a: 0 for a in self.agents if a != action}
 
     def get_available_agents(self, state: str) -> List[str]:
         """

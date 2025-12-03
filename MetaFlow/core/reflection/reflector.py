@@ -35,6 +35,7 @@ class Reflector:
         for _ in range(self.config.REFLECTOR_RETRY_TIMES):
             message = [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}]
             response = self.llm.chat(message)
+            self.logger.info(f"Reflector response:\n {response}\n")
             try:
                 # Extract JSON from the response, which might be in a markdown block
                 json_match = re.search(r'```json\n(.*?)\n```', response, re.DOTALL)
@@ -77,20 +78,26 @@ class Reflector:
         This graph, in Mermaid.js format, shows the layered execution flow of a previous task. It includes the agents at each layer and the connections between them.
 
         [Importance]
-        1. The skill name you have summarized cannot be included in existing agents. Current Existing Agents:{self.agents}.
-        2. The importance of this task is to identify the most core, reusable, and fully functional subgraph pattern from the given graph. 
-        3. You don't need to always provide new skills. If there are no good subgraphs in the running diagram, there is no need to summarize. You can set the skill name to null.
+        1. The skill name you propose MUST NOT duplicate or overlap with existing agents. Current Existing Agents: {self.agents}.
+        2. Only propose a subgraph that is highly generalizable and powerful (reusable across diverse tasks). Avoid trivial, narrow, or role-overlapping flows.
+        3. If NO such highly generalizable pattern exists, set "skill_name" to null and DO NOT propose a subgraph.
 
         ```mermaid
         {graph_representation}
         ```
 
-        [Your task]
-        1.  Analyze this graph to identify the most core, reusable, and fully functional subgraph pattern. A good pattern often represents a complete logical loop or a self-contained multi-step process (e.g., code -> test -> fix -> test).
-        2.  Give this subgraph pattern a concise and expressive 'skill_name' (e.g., "CodeDebuggingLoop").
-        3.  Briefly describe the function of this skill in the 'description' field.
-        4.  Define the structure of this new skill in the 'sub_graph' field. The structure MUST be an **edge list** (a list of lists, where each inner list is `["source_agent", "target_agent"]`).
+        [Constraints]
+        1. Use ONLY these exact agent names (plus 'START' and 'END'): {self.agents}. Do NOT invent new names.
+        2. Do NOT include suffixed names (e.g., 'Agent_X_3'). If you reference nodes from the graph, normalize them to their base names.
+        3. Avoid generating flows that duplicate the responsibilities or pipelines of existing agents; prefer compact, capability-rich subgraphs.
+        4. The subgraph MUST be expressed strictly as an edge list: [["source","target"], ...]. 'source' may be 'START'; 'target' may be 'END'.
         5.  The entry node of the subgraph MUST be named 'START'. The subgraph should ideally converge to a single node before connecting to the final 'END' node.
+        
+        [Your task]
+        1. Analyze the graph to identify a compact, reusable, and complete multi-step pattern (e.g., write→review→fix→validate) that is NOT redundant with existing roles.
+        2. Give this subgraph a concise 'skill_name' that clearly reflects its general capability.
+        3. Briefly describe its function in 'description'.
+        4. Define 'sub_graph' strictly as an edge list of known agents (normalized), with 'START' as entry and ideally converging before 'END'.
 
         [Your output]
         Please output **ONLY** a single JSON object enclosed in ```json tags. Do not include any other explanations.

@@ -74,7 +74,10 @@ class BaseAgent(ABC):
 
     def get_prompt(self, task_description: str, prompt: str, 
             next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
-        available_agents = ', '.join(f"{agent_name}: {AGENT_DETAILS[agent_name]}, " for agent_name in next_available_agents if agent_name in AGENT_DETAILS)
+        # Include dynamic skills even if not in AGENT_DETAILS, with a generic description
+        def _describe(agent_name: str) -> str:
+            return f"{agent_name}: {AGENT_DETAILS.get(agent_name, 'Dynamic Skill (Composite Subgraph)')}"
+        available_agents = ', '.join(_describe(agent_name) for agent_name in next_available_agents)
         system_prompt = self.system_prompt.format(
             available_agents=available_agents
         )
@@ -88,7 +91,7 @@ class BaseAgent(ABC):
 
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "assistant", "content": f"Your Role Guideline: {self.agent_prompt}"},
+            {"role": "assistant", "content": f"# Your Role Guideline:\n {self.agent_prompt}"},
             {"role": "user", "content": prompt_template.format(task_description=task_description, prompt=prompt)}
         ]
 

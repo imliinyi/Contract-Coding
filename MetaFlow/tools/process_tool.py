@@ -82,3 +82,6 @@ start_process_schema = {
         }
     }
 }
+
+# Attach OpenAI tool schema to the function so chat_with_tools can discover it
+start_process.openai_schema = start_process_schema

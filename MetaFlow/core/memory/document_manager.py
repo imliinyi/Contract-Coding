@@ -1,5 +1,6 @@
 import collections.abc
 import logging
+import json
 from typing import Any, Dict
 
 from MetaFlow.utils.log import get_logger
@@ -51,9 +52,20 @@ class DocumentManager:
         for action in actions:
             action_type = action.get("type")
             content = action.get("content", "")
+            # Normalize content to string to avoid attribute errors when splitting
+            if not isinstance(content, str):
+                try:
+                    content = json.dumps(content, ensure_ascii=False)
+                except Exception:
+                    content = str(content)
 
             if action_type == "add":
                 line = action.get("line")
+                # Ensure line is a valid integer within bounds
+                try:
+                    line = int(line) if line is not None else 1
+                except (ValueError, TypeError):
+                    line = 1
                 documents = self._document.split('\n')
 
                 if not self._document.strip():
@@ -73,8 +85,33 @@ class DocumentManager:
                 self.logger.info(f"Added content to document.")
 
             elif action_type == "update":
-                self._document = content
+                start_line = action.get("start_line")
+                end_line = action.get("end_line")
+                # Ensure line numbers are valid integers within bounds
+                try:
+                    start_line = int(start_line) if start_line is not None else 1
+                    end_line = int(end_line) if end_line is not None else len(self._document.split('\n'))
+                except (ValueError, TypeError):
+                    start_line, end_line = 1, len(self._document.split('\n'))
+
+                if start_line < 1:
+                    start_line = 1
+                elif start_line > len(self._document.split('\n')):
+                    start_line = len(self._document.split('\n'))
+
+                if end_line < start_line:
+                    end_line = start_line
+                elif end_line > len(self._document.split('\n')):
+                    end_line = len(self._document.split('\n'))
+
+                documents = self._document.split('\n')
+                documents[start_line - 1:end_line] = content.split('\n')
+                self._document = '\n'.join(documents)
+                
                 self.logger.info(f"Updated (overwrote) document.")
+
+            with open("document.txt", "w") as f:
+                f.write(self._document)
 
             # elif action_type == "delete":
             #     if agent_name in self._document:
