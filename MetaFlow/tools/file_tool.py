@@ -39,6 +39,9 @@ def _normalize_path(path: str) -> str:
     
     if not path or path == ".":
         return "."
+
+    if 'workspace/' in path:
+        path = path.replace('workspace/', '')
     
     path = os.path.normpath(path)
 
@@ -266,6 +269,8 @@ def write_file(path: str, content: str) -> str:
     """
     try:
         full_path = _get_full_path(path)
+        if '.md' in path:
+            return "Error: Don't write markdown files directly. Use a code editor instead."
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         content = content.replace('"', '\"')
         content = codecs.decode(content, 'unicode_escape')
@@ -406,6 +411,78 @@ update_file_lines.openai_schema = {
                 }
             },
             "required": ["file_path", "start_line", "end_line", "new_content"]
+        }
+    }
+}
+
+
+def add_code(path: str, line: int, content: str) -> str:
+    """
+    Insert code into a file at the specified 1-indexed line.
+
+    - If line == 1: insert at file start;
+    - If line == len(file)+1 or larger: append at end;
+    - If file does not exist: create it and write content.
+
+    The content is unicode-escape decoded and ensured to end with a newline.
+    """
+    try:
+        full_path = _get_full_path(path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+        # Prepare insert text
+        insert_text = codecs.decode(content.replace('"', '\"'), 'unicode_escape')
+        if insert_text and not insert_text.endswith(('\n', '\r', '\r\n')):
+            insert_text += "\n"
+
+        # Create missing file
+        if not os.path.exists(full_path):
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(insert_text)
+            return f"File created and content inserted into '{path}' at line 1."
+
+        # Read existing lines
+        with open(full_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Normalize line index (1-indexed)
+        target_idx = max(0, line - 1)
+        target_idx = min(target_idx, len(lines))
+
+        new_lines = lines[:target_idx] + [insert_text] + lines[target_idx:]
+
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+
+        return f"Successfully inserted content into '{path}' at line {target_idx + 1}."
+
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return f"An unexpected error occurred: {str(e)}"
+
+add_code.openai_schema = {
+    "type": "function",
+    "function": {
+        "name": "add_code",
+        "description": "Insert code into a file at a specified 1-indexed line using only path, line, and content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to the file within the workspace."
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "1-indexed line number where the content will be inserted."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Code/content to insert; unicode-escape decoded; newline ensured."
+                }
+            },
+            "required": ["path", "line", "content"]
         }
     }
 }
