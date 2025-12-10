@@ -1,10 +1,10 @@
 from abc import ABC
 import json
 import re
+import time
 from typing import Any, Callable, Dict, List, Union
 
 from openai import AzureOpenAI
-
 
 from MetaFlow.utils.log import get_logger
 
@@ -180,9 +180,8 @@ class LLM(ABC):
             except Exception as e:
                 error_msg = f"LLM call error: {e}"
                 logger.error(error_msg)
-                # Return a formatted error message to the user
-                return f"<thinking>LLM call error.</thinking><output>Error: {str(e)}</output><next_agents>['END']</next_agents><task_requirements>{{}}</task_requirements>"
-
+                time.sleep(10)
+                
         # Final summarization step: Generate complete output based on the conversation history.
         if is_tool_call:
             try:

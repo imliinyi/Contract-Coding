@@ -151,13 +151,21 @@ class BaseAgent(ABC):
                 for action in actions:
                     action_type = action.get('type')
                     
-                    if action_type == 'add':
+                    if action_type in ('add', 'update'):
                         action['agent_name'] = self.agent_name
+                        action['base_version'] = document_manager.get_version()
+                        # Keep only update semantics; merge handled by layer aggregator based on base_version
                     
                     processed_actions.append(action)
 
                 if processed_actions:
-                    document_manager.execute_actions(processed_actions)
+                    try:
+                        if hasattr(document_manager, 'is_aggregating') and document_manager.is_aggregating():
+                            document_manager.queue_actions(processed_actions)
+                        else:
+                            document_manager.execute_actions(processed_actions)
+                    except Exception as e:
+                        self.logger.error(f"Document action handling failed: {e}")
             except (json.JSONDecodeError, TypeError) as e:
                 self.logger.error(f"Failed to parse or execute document actions: {e}")
 

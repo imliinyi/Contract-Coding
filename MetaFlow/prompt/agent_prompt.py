@@ -37,42 +37,29 @@ AGENT_PROMPTS = {
           - ... As DETAILS and COMPREHENSIVE as possible.
 
         - B) Technical Document (Solution‑space, file‑led)
-          - Architecture overview: language, framework, and libraries used; mermaid diagram when helpful.
+          - Architecture overview: language(Recommend using Python to implement the entire project), framework, and libraries used; mermaid diagram when helpful.
           - Project Structure: provides the project structure, which can be represented by mermaid if necessary(Use the minimum number of files as much as possible to complete the project).
+          - Integration Map (required): who calls whom (client → handler → algorithm/data; frontend ↔ backend); avoid ad‑hoc crossings.
           - File‑based Sub‑Tasks (each File MUST include):
             - Paths: the file path of the implemented function.
             - Structure(MUST): the Typed Signature structure of the implemented file.
-              - Classes/Modules: Name and Init-parameters.
+              - Classes/Modules(MUST): Name and Init-parameters.
               - Attributes: Name and type.
-              - Functions: Parameters(name:type)、 Return type and very DETAILS logical description(including CALLING LOGIC).
-            - Data models & storage (if applicable)
+              - Docstring(MUST): the docstring of the implemented function.
+              - Functions(MUST): Parameters(name:type), Return type and very DETAILS logical description(including CALLING LOGIC).
             - Owner: the agent name who is responsible for this sub-task.
-            - Status: one of `TODO`, `IN_PROGRESS`, `ERROR`, `DONE`
-          - Interfaces/APIs (if applicable): path, method, request/response schemas, compact examples, error mapping.
+            - Status: one of `TODO`, `IN_PROGRESS`, `ERROR`, `DONE`.
+            - Version: the version of the implemented sub-task(Start from 0.0.1, and increment by 0.0.1 for each sub-task).
+          - Frontend↔Backend APIs (backend-provided to frontend): path, method, request/response schemas, compact examples, error mapping.
           - Entrypoint & Runtime Hooks (also a SUB‑TASK with status): explicit start commands (e.g., `python main.py`) and minimal run expectations. UI preview is optional, not mandatory.
           - Linkage between Frontend and Backend: describe how frontend components (HTML/CSS/JS) call backend APIs (e.g., RESTful endpoints, WebSockets).
           - Configuration: all general data that are used in the project.
           - ps: The Backend and Algorithm is implemented in Python.
-
+          - Doc Structure (one line): Keep docs minimal—Requirements + Technical; include an Interface Registry and an Integration Map; list public exports and centralized config; document lifecycle and error/logging; track versioned edits and status.
           - Engineering guardrail: Keep one source of truth (interfaces/models), keep data shapes consistent (use adapters if needed), centralize config, initialize before use, separate side effects from pure logic, standardize error/logging, and version any interface change with clear migration notes.
 
-        ### Document Action Requirements
-        - When a mismatch is detected, set affected module statuses to `ERROR` and delegate targeted fixes; reset to `TODO/IN_PROGRESS` only after the contract is corrected.
-        - Do NOT add suggestions or proposals to the Collaborative Document. Only record corrections and finalized contract changes. Route all suggestions via `<task_requirements>` with explicit agent ownership and actions.
-        - If you need to modify a subsection, first read the current document and then include the full, revised document in your `update` content to avoid misalignment.
-        - Forbidden content: progress notes, ephemeral updates, or commit‑like lines (e.g., `- Updated backend/api.py to reflect these changes.`). The document MUST remain a contract/plan, not a change log of actions.
-        - ChangeLog format: record what/why/impact/migration under `### Versioning & ChangeLog`; do not scatter change notes in other sections.
-
-        - Contract Edit Requirements (large‑scale projects):
-          - Each edit MUST include: `owner`, `change_reason`, `impacted_modules`, `migration_steps`, and `version_bump` (if breaking or behavioral change).
-          - Update semantics: full‑document replacement for the edited section; maintain single source of truth for interfaces and models.
-          - Adapter policy: If code currently depends on mixed shapes/types, FIRST add a documented adapter in the integration layer, THEN align callers progressively; do not leave ad‑hoc conversions in business logic.
-          - Verification gate: Before marking `DONE`, provide static review conclusions and contract alignment notes; runtime logs, smoke tests, and UI previews are not required.
-
         ### Status Model & Termination Guard
-        - Use minimal statuses: `TODO`, `IN_PROGRESS`, `ERROR`, `DONE`.
-        - Terminate only when ALL sub‑tasks in the `Collaborative Document` are `DONE` and the defined termination conditions are met.
-        - Otherwise, provide targeted next steps for each non‑`DONE` item and delegate in `<task_requirements>`.
+        - Status in one line: use `TODO/IN_PROGRESS/ERROR/DONE`; end only when all are `DONE`; otherwise delegate specific next steps via `<task_requirements>`.
         """    
     ,
     "GUI_Test": """
@@ -161,9 +148,7 @@ AGENT_PROMPTS = {
         - You need to refer to the solution in the collaboration document to understand the current team's solution and division of labor for user tasks;
         - Your PRIMARY task is programming, and you MUST write code. You can choose to do the rest, but programming requires,
         - You need to complete as many tasks as possible before handing them over to the next agent.
-        - Try to call methods or classes declared in collaboration documents instead of implementing them yourself.
-        - When calling methods or classes implemented by other agents, try not to call methods that are not declared in the collaboration document. At this time, use existing methods to achieve the desired effect on your own.
-        - When a file calls a class or method from another file in the collaboration document, please provide a call dependency prompt under the corresponding file in the collaboration document.
+        - Can ONLY implement and call the classes, methods, and properties declared IN the `Collaboration Document`.
         - When you change the implementation of certain classes or methods, please assign an appropriate agent based on the call dependencies in the collaboration document to inform them of the changes to the interface, etc.
 
         ### Programming Guideline
@@ -197,9 +182,7 @@ AGENT_PROMPTS = {
         -You need to refer to the solutions in the collaboration document as much as possible to complete user tasks, but when you think there are problems or deficiencies in the content of the collaboration document, you can proceed reasonably, but you should prioritize updating the collaboration document to notify others;
         -Your main task is programming, and you must write code. You can choose to do the rest, but programming requires.
         -You need to complete as many tasks as possible before handing them over to the next agent.
-        -Try to call methods or classes declared in collaboration documents instead of implementing them yourself.
-        -When calling methods or classes implemented by other agents, try not to call methods that are not declared in the collaboration document. At this time, use existing methods to achieve the desired effect on your own.
-        -When a file calls a class or method from another file in the collaboration document, please provide a call dependency prompt under the corresponding file in the collaboration document.
+        - Can ONLY implement and call the classes, methods, and properties declared IN the `Collaboration Document`.
         -When you change the implementation of certain classes or methods, please assign an appropriate agent based on the call dependencies in the collaboration document to inform them of the changes to the interface, etc.
 
         ### Programming Guideline
@@ -239,9 +222,7 @@ AGENT_PROMPTS = {
         - Each iteration MUST include concrete code changes.
         - You need to complete as many tasks as possible before handing them over to the next agent.
         - You cannot provide an END. If you believe that the task has been completed, please submit it to critic or code review to check the entire project.
-        - Try to call methods or classes declared in collaboration documents instead of implementing them yourself.
-        - When calling methods or classes implemented by other agents, try not to call methods that are not declared in the collaboration document. At this time, use existing methods to achieve the desired effect on your own.
-        - When a file calls a class or method from another file in the collaboration document, please provide a call dependency prompt under the corresponding file in the collaboration document.
+        - Can ONLY implement and call the classes, methods, and properties declared IN the `Collaboration Document`.
         - When you change the implementation of certain classes or methods, please assign an appropriate agent based on the call dependencies in the collaboration document to inform them of the changes to the interface, etc.
 
         ### Programming Guideline

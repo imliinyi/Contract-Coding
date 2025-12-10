@@ -253,7 +253,7 @@ class GUIAgent(BaseAgent):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"The Overall Task: {state.task} \nCurrent Sub-Task: {state.sub_task} \nThe Current Collaborative Document: {document_manager.get()}"
+                        "text": f"The Overall Task: {state.task} \nCurrent Sub-Task: {state.sub_task} \nCurrent Project Structure: {file_tree('.')} \nThe Current Collaborative Document: {document_manager.get()}"
                     }
                 ]
             }

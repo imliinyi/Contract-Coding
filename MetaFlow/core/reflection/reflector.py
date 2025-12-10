@@ -111,3 +111,49 @@ class Reflector:
         }}
         ```
         """
+
+    def abstract_skill_from_subgraph(self, sub_graph: List[Tuple[str, str]]) -> Dict[str, Any] | None:
+        """
+        Given a candidate subgraph (edge list), let the LLM suggest a concise skill_name and description.
+        The sub_graph is fixed; the model MUST NOT invent new edges or agent names.
+        """
+        edges_json = json.dumps(sub_graph, ensure_ascii=False)
+        prompt = f"""
+        You are a senior system architect. A frequent reusable subgraph was mined from past executions.
+
+        [Constraints]
+        1. Use ONLY existing agent names: {self.agents}. Do NOT invent new names.
+        2. The subgraph edges are FIXED and MUST be kept exactly as provided. Do NOT modify, add, or remove edges.
+        3. Propose a concise, generalizable 'skill_name' that does not duplicate existing agents.
+        4. Provide a short 'description' of the capability.
+
+        [Input]
+        sub_graph (edge list): {edges_json}
+
+        [Your output]
+        Output ONLY a single JSON object enclosed in ```json with fields: skill_name, description, sub_graph.
+        The 'sub_graph' field MUST equal the provided edge list verbatim.
+        """
+
+        message = [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}]
+        response = self.llm.chat(message)
+        self.logger.info(f"Reflector (from subgraph) response:\n {response}\n")
+        try:
+            json_match = re.search(r'```json\n(.*?)\n```', response, re.DOTALL)
+            json_str = json_match.group(1) if json_match else response
+            abstract_skill = json.loads(json_str.strip())
+
+            # Basic validation
+            if not isinstance(abstract_skill, dict):
+                return None
+            if "skill_name" not in abstract_skill or "sub_graph" not in abstract_skill:
+                return None
+            if abstract_skill["skill_name"] is None or str(abstract_skill["skill_name"]).strip().lower() == 'null':
+                return None
+            # Ensure sub_graph equals provided
+            if abstract_skill.get("sub_graph") != sub_graph:
+                abstract_skill["sub_graph"] = sub_graph
+            return abstract_skill
+        except Exception as e:
+            self.logger.error(f"abstract_skill_from_subgraph parse error: {e}")
+            return None

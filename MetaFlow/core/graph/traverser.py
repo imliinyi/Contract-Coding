@@ -61,6 +61,12 @@ class GraphTraverser:
             next_layer_inputs = defaultdict(list)
 
             layer_outputs = {}
+            # Begin per-layer document aggregation using the same base snapshot
+            base_version = self.document_manager.get_version()
+            try:
+                self.document_manager.begin_layer_aggregation(base_version)
+            except Exception:
+                pass
             with ThreadPoolExecutor() as executor:
                 futures = {
                     executor.submit(
@@ -79,6 +85,12 @@ class GraphTraverser:
                         layer_outputs[agent_name] = output_state
                     except Exception as e:
                         self.logger.error(f"Agent {agent_name} failed with error: {e}")
+
+            # Commit per-layer aggregated document updates before propagating next layer
+            try:
+                self.document_manager.commit_layer_aggregation()
+            except Exception as e:
+                self.logger.error(f"Document layer aggregation commit failed: {e}")
 
             for agent_name, output_state in layer_outputs.items():
                 successors = forward_graph.get(agent_name, [])
@@ -125,6 +137,13 @@ class GraphTraverser:
             layer_outputs = []
             next_level_agents = defaultdict(list)
 
+            # Begin per-layer document aggregation using a consistent base snapshot
+            base_version = self.document_manager.get_version()
+            try:
+                self.document_manager.begin_layer_aggregation(base_version)
+            except Exception:
+                pass
+
             with ThreadPoolExecutor() as executor:
                 # The logic for getting next_available_agents is the same for all agents in the layer
                 next_available_agents = self.decision_space.agents
@@ -161,6 +180,12 @@ class GraphTraverser:
                         })
                     except Exception as e:
                         self.logger.error(f"Agent {agent_name} failed with error: {e}")
+
+            # Commit per-layer aggregated document updates before computing rewards/next agents
+            try:
+                self.document_manager.commit_layer_aggregation()
+            except Exception as e:
+                self.logger.error(f"Document layer aggregation commit failed: {e}")
 
             num_terminating = sum([1 for o in layer_outputs if o['is_terminating']])
             num_total = len(layer_outputs)

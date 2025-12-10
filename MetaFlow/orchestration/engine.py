@@ -11,6 +11,7 @@ from MetaFlow.core.graph.traverser import GraphTraverser
 from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.core.reflection.reflector import Reflector
+from MetaFlow.core.reflection.miner import FrequentSubgraphMiner
 from MetaFlow.core.reflection.triggers import check_layer_revisit, check_long_path
 from MetaFlow.orchestration.learner import Learner
 from MetaFlow.orchestration.runner import AgentRunner
@@ -124,15 +125,51 @@ class Engine:
         final_state = terminating_states[0] if terminating_states else None
         is_success = final_state is not None
 
-        # Reflect and learn
-        if is_success:
-            self.reflect_and_learn(execution_trace, all_layers)
+        # No reflection or persistence here; train() will handle them
 
         # Backward propagation
         if self.is_train and execution_trace:
             self.learner.learn(all_layers, execution_trace)
 
         return final_state, is_success
+
+    def _persist_execution_trace(self, execution_trace: List[Tuple[str, str, float]], input_task: str) -> None:
+        """
+        Append current run's execution edges to a JSONL file for later mining.
+        Only stores edges (u, v), without rewards.
+        """
+        import os
+        import json
+        from datetime import datetime
+
+        # Prepare edges-only list
+        edges = [[u, v] for (u, v, _reward) in execution_trace]
+        record = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "task": input_task,
+            "edges": edges
+        }
+
+        # Ensure history directory exists
+        os.makedirs("history", exist_ok=True)
+        trace_file = os.path.join("history", "exec_traces.jsonl")
+
+        with open(trace_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def get_top_frequent_subgraphs(self, top_n: int = 3, min_support: int = 3, max_k: int = 4) -> List[List[Tuple[str, str]]]:
+        """
+        Read persisted traces and return Top-N frequent subgraph candidates (as edge lists).
+        This does not perform abstraction/naming; it only mines candidates.
+        """
+        try:
+            miner = FrequentSubgraphMiner()
+            candidates = miner.mine_candidates(top_n=top_n, min_support=min_support, max_k=max_k)
+            self.logger.info(f"Top-{top_n} frequent candidates: {candidates}")
+            return candidates
+        except Exception as e:
+            self.logger.error(f"Mining frequent subgraphs failed: {e}")
+            return []
 
     def _convert_to_graph(self, edge_list: List[List[str]]) -> Dict[str, List[str]]:
         """
@@ -202,6 +239,22 @@ class Engine:
         self.logger.info(f"--- Training on {len(inputs)} samples ---")
         for i, (input_task, tests) in enumerate(zip(inputs, test_cases)):
             final_state, is_success = self._run_single_step(input_task, tests)
+
+            # Persist edges for mining and attempt abstraction if frequent patterns detected
+            try:
+                # Recompute trace cheaply for persistence (edges only)
+                all_layers, execution_trace, _ = self.graph_traverser.traverse(
+                    self.start_agent, self._initialize_state(input_task), tests)
+                self._persist_execution_trace(execution_trace, input_task=input_task)
+            except Exception as e:
+                self.logger.error(f"Persist trace during train failed: {e}")
+
+            try:
+                candidates = self.get_top_frequent_subgraphs(top_n=3, min_support=3, max_k=4)
+                if candidates:
+                    self._abstract_candidates_via_llm(candidates)
+            except Exception as e:
+                self.logger.error(f"Frequent subgraph abstraction failed: {e}")
             # os.environ['WORKSPACE_ID'] = str(i + 1)
             time.sleep(10) # Avoid too many requests to the server
             results.append({
@@ -241,3 +294,43 @@ class Engine:
         all_paths = []
         dfs(start, [], all_paths)
         return all_paths
+
+    def _abstract_candidates_via_llm(self, candidates: List[List[Tuple[str, str]]]) -> None:
+        """
+        For each mined candidate subgraph, ask LLM to name and describe a skill, then register CompositeAgent.
+        Safe-guards: duplication and cycle checks.
+        """
+        for sub_graph in candidates:
+            try:
+                new_skill = self.reflector.abstract_skill_from_subgraph(sub_graph)
+                if not new_skill or not new_skill.get('skill_name'):
+                    continue
+                skill_name = new_skill['skill_name']
+                if skill_name in self.agents:
+                    # Already exists
+                    continue
+
+                # Cycle prevention
+                if self._check_cycle(skill_name, new_skill['sub_graph']):
+                    self.logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping.")
+                    continue
+
+                # Register composite agent
+                composite_agent = CompositeAgent(
+                    agent_name=skill_name,
+                    config=self.config,
+                    decision_space=self.decision_space,
+                    sub_graph=new_skill['sub_graph'],
+                    agents=self.agents,
+                    document_manager=self.document_manager
+                )
+                self.register_agent(skill_name, composite_agent)
+
+                # Add to decision space as available action
+                state = new_skill['sub_graph'][0][1] if new_skill['sub_graph'] else skill_name
+                if isinstance(state, str) and '_1' in state:
+                    state = state.replace('_1', '')
+                self.decision_space.add_new_action(state, skill_name)
+                self.logger.info(f"Registered new composite skill: {skill_name}")
+            except Exception as e:
+                self.logger.error(f"Abstract/register candidate failed: {e}")
