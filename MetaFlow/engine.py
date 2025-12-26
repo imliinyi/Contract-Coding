@@ -5,11 +5,11 @@ from langgraph.graph import END
 
 from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.core.graph.traverser import GraphTraverser
-from MetaFlow.core.memory.audit import audit_file_existence, audit_file_versions
-from MetaFlow.core.memory.document_manager import DocumentManager
-from MetaFlow.core.memory.memory_processor import MemoryProcessor
-from MetaFlow.orchestration.runner import AgentRunner
+from MetaFlow.traverser import GraphTraverser
+from MetaFlow.memory.audit import audit_file_existence, audit_file_versions
+from MetaFlow.memory.document import DocumentManager
+from MetaFlow.memory.processor import MemoryProcessor
+from MetaFlow.runner import AgentRunner
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 

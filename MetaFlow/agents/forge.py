@@ -3,7 +3,7 @@ from typing import List
 
 from MetaFlow.agents.agent import LLMAgent
 from MetaFlow.config import Config
-from MetaFlow.prompt.agent_prompt import get_agent_prompt
+from MetaFlow.prompts.agent_prompt import get_agent_prompt
 from MetaFlow.tools.code_tool import run_code
 from MetaFlow.tools.file_tool import (
     code_outline,

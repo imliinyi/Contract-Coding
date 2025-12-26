@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from langgraph.graph import END
 
 from MetaFlow.config import Config
-from MetaFlow.core.memory.document_manager import DocumentManager
-from MetaFlow.core.memory.memory_processor import MemoryProcessor
+from MetaFlow.memory.document import DocumentManager
+from MetaFlow.memory.processor import MemoryProcessor
 from MetaFlow.llm.client import LLM
-from MetaFlow.prompt.agents_prompt import AGENT_DETAILS, get_agent_prompt
-from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
+from MetaFlow.prompts.agents_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.prompts.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState

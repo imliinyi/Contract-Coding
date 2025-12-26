@@ -4,8 +4,8 @@ from langgraph.constants import END
 
 from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.core.memory.document_manager import DocumentManager
-from MetaFlow.core.memory.memory_processor import MemoryProcessor
+from MetaFlow.memory.document import DocumentManager
+from MetaFlow.memory.processor import MemoryProcessor
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 

@@ -2,7 +2,7 @@ import re
 from typing import Dict, List
 
 from MetaFlow.config import Config
-from MetaFlow.core.memory.document_manager import DocumentManager
+from MetaFlow.memory.document import DocumentManager
 from MetaFlow.llm.client import LLM
 from MetaFlow.utils.state import GeneralState
 from MetaFlow.utils.log import get_logger

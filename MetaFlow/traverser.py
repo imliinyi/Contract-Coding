@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Tuple
 from langgraph.graph import END
 
 from MetaFlow.config import Config
-from MetaFlow.core.memory.audit import check_missing_files, check_missing_specs
-from MetaFlow.core.memory.document_manager import DocumentManager
-from MetaFlow.core.memory.memory_processor import MemoryProcessor
-from MetaFlow.orchestration.runner import AgentRunner
+from MetaFlow.memory.audit import check_missing_files, check_missing_specs
+from MetaFlow.memory.document import DocumentManager
+from MetaFlow.memory.processor import MemoryProcessor
+from MetaFlow.runner import AgentRunner
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
