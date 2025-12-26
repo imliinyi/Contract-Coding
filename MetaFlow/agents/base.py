@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import json
 import re
+from tkinter import END
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langgraph.graph import END
@@ -9,7 +10,7 @@ from MetaFlow.config import Config
 from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.llm.client import LLM
-from MetaFlow.prompt.agent_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.prompt.agents_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompt.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.log import get_logger
@@ -33,16 +34,10 @@ class BaseAgent(ABC):
             max_tokens=config.OPENAI_API_MAX_TOKENS,
             temperature=config.OPENAI_API_TEMPERATURE
         )
-        self.salary = config.AGENT_SALARY
-        # self.salaries: Dict[str, float] = config.AGENT_SALARIES
 
         self.system_prompt = self.get_system_prompt()
         self.custom_tools = custom_tools or []
 
-        self.success = 0
-        self.trails = 0
-        self.success_rate = 0.0
-        self.test_cases = None
 
     @staticmethod
     def validate_state(state: GeneralState | None) -> bool:
@@ -76,7 +71,7 @@ class BaseAgent(ABC):
             next_available_agents: List[str]) -> List[Dict[str, Union[str, List]]]:
         # Include dynamic skills even if not in AGENT_DETAILS, with a generic description
         def _describe(agent_name: str) -> str:
-            return f"{agent_name}: {AGENT_DETAILS.get(agent_name, 'Dynamic Skill (Composite Subgraph)')}"
+            return f"{agent_name}: {AGENT_DETAILS.get(agent_name, '')}"
         available_agents = ', '.join(_describe(agent_name) for agent_name in next_available_agents)
         system_prompt = self.system_prompt.format(
             available_agents=available_agents
@@ -96,8 +91,8 @@ class BaseAgent(ABC):
         ]
 
     @abstractmethod
-    def _execute_agent(self, state: GeneralState, test_cases: List[str], document_manager: DocumentManager, 
-        memory_processor: MemoryProcessor, next_available_agents: List[str]) -> GeneralState:
+    def _execute_agent(self, state: GeneralState, document_manager: DocumentManager, memory_processor: MemoryProcessor, 
+                next_available_agents: List[str]) -> GeneralState:
         """
         Executes the agent's logic. This method MUST be implemented by all concrete subclasses.
         """
@@ -186,14 +181,24 @@ class BaseAgent(ABC):
         task_reqs_json_str = self._parse_tag_with_json("task_requirements", response_text, expected_type=dict)
         if task_reqs_json_str:
             try:
-                task_requirements = json.loads(task_reqs_json_str)
+                raw_task_requirements = json.loads(task_reqs_json_str)
+
+                if isinstance(raw_task_requirements, dict):
+                    task_requirements = {}
+                    for k, v in raw_task_requirements.items():
+                        if isinstance(v, list):
+                            task_requirements[k] = "\n".join(str(item) for item in v)
+                        else:
+                            task_requirements[k] = str(v)
+                else:
+                    task_requirements = None
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON format in <task_requirements> tag: {e}")
         
         if not task_requirements:
             raise EmptyTaskRequirementsError("The <task_requirements> tag is missing, empty, or invalid.")
         
-        next_agents = list(task_requirements.keys())
+        next_agents = list(task_requirements.keys() or [END])
         # next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
 
         return GeneralState(
@@ -206,30 +211,4 @@ class BaseAgent(ABC):
             task_requirements=task_requirements,
         )
 
-    def update_success_rate(self) -> None:
-        """
-        Update the success rate of the agent.
-        """
-        self.success += 1
-        self.success_rate = self.success / self.trails if self.trails > 0 else self.success_rate
-
-    def extract_example(self, prompt: str) -> str:
-        lines = (line.strip() for line in prompt.split('\n') if line.strip())
-
-        results = []
-        lines_iter = iter(lines)
-        for line in lines_iter:
-            if line.startswith('>>>'):
-                function_call = line[4:]
-                expected_output = next(lines_iter, None)
-                if expected_output:
-                    results.append(f"assert {function_call} == {expected_output}")
-
-        self.test_cases = results
-
-    # def run_test(self, code: str) -> tuple[bool, str, GeneralState]:
-    #     is_solved, feedback, state = PyExecutor().execute(code, self.test_cases, timeout=10)
-    #     return is_solved, feedback, state
-
-
-    
+  

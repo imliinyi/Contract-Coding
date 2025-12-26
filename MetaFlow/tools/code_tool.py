@@ -12,20 +12,18 @@ def run_code(code: str, language: str = 'python') -> str:
     :param language: The programming language of the code. Defaults to 'python'.
     :return: The output of the code execution (stdout and stderr).
     """
-    # 获取工作区目录，但不改变当前目录
     workspace_path = _get_full_path('.')
     if language.lower() not in ['python', 'bash', 'sh']:
         return f"Error: Language '{language}' is not supported. Supported languages are 'python', 'bash', and 'sh'."
 
     try:
-        # 使用cwd参数设置工作目录，而不是改变当前进程的工作目录
         if language.lower() == 'python':
             process = subprocess.run(
                 [sys.executable, '-c', code],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=workspace_path  # 在工作区内执行代码
+                cwd=workspace_path 
             )
         else:  # For bash/sh
             process = subprocess.run(
@@ -34,7 +32,7 @@ def run_code(code: str, language: str = 'python') -> str:
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=workspace_path,  # 在工作区内执行代码
+                cwd=workspace_path, 
                 executable='/bin/bash' if language.lower() == 'bash' else '/bin/sh'
             )
 

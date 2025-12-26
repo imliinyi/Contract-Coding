@@ -1,6 +1,8 @@
 import codecs
 import os
 from typing import List
+import ast
+import re
 
 # Dynamically set WORKSPACE based on environment variable
 # workspace_id = os.environ.get('WORKSPACE_ID')
@@ -125,6 +127,7 @@ def file_tree(path: str, max_depth: int = 3) -> str:
     :return: A string representing the tree structure of the directory.
     """
     try:
+        path = path.replace('workspace/', '')
         full_path = _get_full_path(path)
     except ValueError as e:
         return str(e)
@@ -262,6 +265,7 @@ read_file.openai_schema = {
 def write_file(path: str, content: str) -> str:
     """
     Writes content to a file. Creates the file if it does not exist, and overwrites it if it does.
+    Adds a version number to the file, incrementing it on each write.
 
     :param path: The path to the file to write to.
     :param content: The content to write to the file.
@@ -272,6 +276,18 @@ def write_file(path: str, content: str) -> str:
         if '.md' in path:
             return "Error: Don't write markdown files directly. Use a code editor instead."
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+        version = 1
+        if os.path.exists(full_path):
+            with open(full_path, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                match = re.match(r"# version: (\d+)", first_line)
+                if match:
+                    version = int(match.group(1)) + 1
+
+        version_comment = f"# version: {version}\n"
+        content = version_comment + content
+
         content = content.replace('"', '\"')
         content = codecs.decode(content, 'unicode_escape')
         with open(full_path, 'w', encoding='utf-8') as f:
@@ -483,6 +499,102 @@ add_code.openai_schema = {
                 }
             },
             "required": ["path", "line", "content"]
+        }
+    }
+}
+
+
+def code_outline(file_path: str) -> str:
+    if file_path.endswith(".py"):
+        return python_outline(file_path)
+    else:
+        raise ValueError(
+            f"Unsupported code file extension: {file_path}. Use `read_file()` instead."
+        )
+
+def python_outline(file_path: str) -> str:
+    """
+    Generates a structured outline of a Python file, including classes, methods, functions, and variables.
+
+    :param file_path: The path to the Python file.
+    :return: A string representing the code outline.
+    """
+    try:
+        full_path = _get_full_path(file_path)
+        with open(full_path, "r", encoding="utf-8") as file:
+            file_content = file.read()
+
+        tree = ast.parse(file_content)
+
+        outline = []
+
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                class_range = (
+                    f"[{node.lineno}, {node.end_lineno}]"
+                    if hasattr(node, "end_lineno")
+                    else f"[{node.lineno}, ?]"
+                )
+                outline.append(f"Class: {node.name}, line_range={class_range}")
+                for class_member in node.body:
+                    if isinstance(class_member, ast.FunctionDef):
+                        method_range = (
+                            f"[{class_member.lineno}, {class_member.end_lineno}]"
+                            if hasattr(class_member, "end_lineno")
+                            else f"[{class_member.lineno}, ?]"
+                        )
+                        outline.append(
+                            f"  Method: {class_member.name}, line_range={method_range}"
+                        )
+                    elif isinstance(class_member, ast.Assign):
+                        for target in class_member.targets:
+                            if isinstance(target, ast.Name):
+                                attr_range = (
+                                    f"[{class_member.lineno}, {class_member.end_lineno}]"
+                                    if hasattr(class_member, "end_lineno")
+                                    else f"[{class_member.lineno}, ?]"
+                                )
+                                outline.append(
+                                    f"  Attribute: {target.id}, line_range={attr_range}"
+                                )
+            elif isinstance(node, ast.FunctionDef):
+                func_range = (
+                    f"[{node.lineno}, {node.end_lineno}]"
+                    if hasattr(node, "end_lineno")
+                    else f"[{node.lineno}, ?]"
+                )
+                outline.append(f"Function: {node.name}, line_range={func_range}")
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        var_range = (
+                            f"[{node.lineno}, {node.end_lineno}]"
+                            if hasattr(node, "end_lineno")
+                            else f"[{node.lineno}, ?]"
+                        )
+                        outline.append(f"Variable: {target.id}, line_range={var_range}")
+
+        return "\n".join(outline)
+
+    except FileNotFoundError:
+        return f"Error: File not found at path '{file_path}'"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+code_outline.openai_schema = {
+    "type": "function",
+    "function": {
+        "name": "code_outline",
+        "description": "Generates a structured outline of a code file, including classes, methods, functions, and variables.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The relative path to the code file within the workspace."
+                }
+            },
+            "required": ["file_path"]
         }
     }
 }

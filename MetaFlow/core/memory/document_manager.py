@@ -1,5 +1,4 @@
 import collections.abc
-import logging
 import json
 import threading
 from typing import Any, Dict
@@ -91,7 +90,21 @@ class DocumentManager:
                 
             #     self.logger.info(f"Added content to document.")
 
-            if action_type == "update":
+            if action_type == "add":
+                with self._lock:
+                    if getattr(self, '_aggregate_mode', False):
+                        if not hasattr(self, '_queued_actions'):
+                            self._queued_actions = []
+                        self._queued_actions.append({"type": "add", "content": content})
+                    else:
+                        sep = "\n\n" if self._document else ""
+                        self._document = (self._document or "") + sep + (content or "")
+                        self._version += 1
+                        self._history[self._version] = self._document
+                with open('document.md', "w", encoding="utf-8") as f:
+                    f.write(self._document)
+
+            elif action_type == "update":
                 agent_name = action.get("agent_name", "")
                 base_version = action.get("base_version", self._version)
 
@@ -119,7 +132,7 @@ class DocumentManager:
                             self._history[self._version] = self._document
                             self.logger.error(f"Immediate range merge failed, appended content instead: {e}")
 
-            with open("document.txt", "w", encoding="utf-8") as f:
+            with open('document.md', "w", encoding="utf-8") as f:
                 f.write(self._document)
         
             # elif action_type == "delete":
@@ -244,9 +257,8 @@ class DocumentManager:
             range_patches = []
             full_updates = []
             for action in getattr(self, '_queued_actions', []):
-                if action.get('type') != 'update':
-                    continue
-                full_updates.append(action)
+                if action.get('type') == 'update':
+                    full_updates.append(action)
 
             # Normalize full document updates into base-relative range patches
             for fu in full_updates:
@@ -268,16 +280,20 @@ class DocumentManager:
             try:
                 work_doc = self._apply_range_patches(base_doc, range_patches)
             except Exception:
-                # Fallback: sequential layered merge
                 work_doc = base_doc
                 for fu in full_updates:
                     work_doc = self._apply_layered_patch(base_doc=base_doc, update_doc=fu.get('content', ''), current_doc=work_doc)
+
+            add_contents = [a.get('content', '') for a in getattr(self, '_queued_actions', []) if a.get('type') == 'add']
+            if add_contents:
+                sep = "\n\n" if work_doc else ""
+                work_doc = (work_doc or "") + sep + ("\n\n".join([str(c) for c in add_contents]))
 
             # Commit once
             self._document = work_doc
             self._version += 1
             self._history[self._version] = self._document
-            with open("document.txt", "w", encoding="utf-8") as f:
+            with open('document.md', "w", encoding="utf-8") as f:
                 f.write(self._document)
             # Reset aggregation context
             self._aggregate_mode = False

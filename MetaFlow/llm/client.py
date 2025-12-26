@@ -1,8 +1,7 @@
 from abc import ABC
 import json
-import re
 import time
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Dict, List
 
 from openai import AzureOpenAI
 

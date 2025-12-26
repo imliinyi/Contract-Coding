@@ -21,15 +21,12 @@ def browse_and_capture(url: str = "http://localhost:5000") -> dict:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080") 
 
-        # Automatically download and manage the chromedriver
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
 
         driver.get(url)
-        # Wait for the page to load completely
         driver.implicitly_wait(5)
         
-        # Take a full-page screenshot
         screenshot_base64 = driver.get_full_page_screenshot_as_base64()
         page_source = driver.page_source
 
@@ -42,7 +39,6 @@ def browse_and_capture(url: str = "http://localhost:5000") -> dict:
     except Exception as e:
         return {"error": f"An error occurred while browsing: {str(e)}"}
 
-# OpenAI Tool Schema for the above function
 browse_and_capture_schema = {
     "type": "function",
     "function": {

@@ -1,40 +1,45 @@
-from collections import defaultdict
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.graph import END
 
 from MetaFlow.agents.base import BaseAgent
 from MetaFlow.config import Config
-from MetaFlow.core.decision_space.decision_space import DecisionSpace
-from MetaFlow.core.graph.composer import CompositeAgent
 from MetaFlow.core.graph.traverser import GraphTraverser
+from MetaFlow.core.memory.audit import audit_file_existence, audit_file_versions
 from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.core.memory.memory_processor import MemoryProcessor
-from MetaFlow.core.reflection.reflector import Reflector
-from MetaFlow.core.reflection.miner import FrequentSubgraphMiner
-from MetaFlow.core.reflection.triggers import check_layer_revisit, check_long_path
-from MetaFlow.orchestration.learner import Learner
 from MetaFlow.orchestration.runner import AgentRunner
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
 
 class Engine:
-
+    """
+    The engine for the MetaFlow.
+    """
     def __init__(self, config: Config):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
-        self.agents : Dict[str, BaseAgent | CompositeAgent | None] = {END: None}
+        self.agents : Dict[str, BaseAgent | None] = {END: None}
         self.start_agent : Optional[str] = None
         self.is_train = True
         self.termination_policy = config.TERMINATION_POLICY
 
         self.memory_processor = MemoryProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
-        self.decision_space: Optional[DecisionSpace] = None
-        self.graph_traverser: Optional[GraphTraverser] = None
-        self.learner: Optional[Learner] = None
-        self.reflector = Reflector(self.config, list(self.agents.keys()))
         self.document_manager = DocumentManager()
+        self.agent_runner = AgentRunner(
+            config=self.config,
+            agents=self.agents,
+            memory_processor=self.memory_processor,
+            document_manager=self.document_manager,
+        )
+        self.graph_traverser: Optional[GraphTraverser] = GraphTraverser(
+            config=self.config,
+            agent_runner=self.agent_runner,
+            memory_processor=self.memory_processor,
+            document_manager=self.document_manager
+        )
 
         if self.termination_policy not in ['any', 'majority', 'all']:
             raise ValueError("TERMINATION_PLOICY must be one of ['any', 'majority', 'all'].")
@@ -53,65 +58,7 @@ class Engine:
             task_requirements={self.start_agent: input}
         )
 
-    def _init_decision_space(self) -> None:
-        """
-        Initialize the decision space.
-        """
-        agents = list(self.agents.keys())
-        self.decision_space = DecisionSpace(agents, self.config)
-
-        self.agent_runner = AgentRunner(
-            config=self.config,
-            agents=self.agents,
-            memory_processor=self.memory_processor,
-            document_manager=self.document_manager
-        )
-
-        self.graph_traverser = GraphTraverser(
-            config=self.config,
-            agent_runner=self.agent_runner,
-            decision_space=self.decision_space,
-            memory_processor=self.memory_processor, 
-            document_manager=self.document_manager
-        )
-
-        self.learner = Learner(self.config, self.decision_space, self.agents)
-
-    def _check_cycle(self, new_skill_name: str, sub_graph: List[Tuple[str, str]]) -> bool:
-        """
-        Check if the new skill name will cause a cycle in the graph.
-        """
-        dependencies = defaultdict(list)
-        for agent_name, agent in self.agents.items():
-            if isinstance(agent, CompositeAgent):
-                # Add dependencies from composite agent to its sub-agents
-                for _, target_agent in agent.sub_graph:
-                    if target_agent != END:
-                        dependencies[agent_name].append(target_agent)
-
-        for _, target_agent in sub_graph:
-            if target_agent != END:
-                dependencies[new_skill_name].append(target_agent)
-
-        # DFS to detect cycle
-        visiting = set()
-        visited = set()
-
-        def has_cycle(node):
-            visiting.add(node)
-            for neighbor in dependencies.get(node, []):
-                if neighbor in visiting:
-                    return True  # Cycle detected
-                if neighbor not in visited:
-                    if has_cycle(neighbor):
-                        return True  # Cycle detected
-            visiting.remove(node)
-            visited.add(node)
-            return False  # No cycle detected
-
-        return has_cycle(new_skill_name)
-
-    def _run_single_step(self, input: str, test_cases: List[str] = []) -> Tuple[GeneralState, bool]:
+    def _run_single_step(self, input: str) -> Tuple[GeneralState, bool]:
         """
         Run a single step of the MetaFlow.
         """
@@ -120,20 +67,14 @@ class Engine:
         
         # Forward propagation
         all_layers, execution_trace, terminating_states = self.graph_traverser.traverse(
-            self.start_agent, initial_state, test_cases)
+            self.start_agent, initial_state)
 
         final_state = terminating_states[0] if terminating_states else None
         is_success = final_state is not None
 
-        # No reflection or persistence here; train() will handle them
-
-        # Backward propagation
-        if self.is_train and execution_trace:
-            self.learner.learn(all_layers, execution_trace)
-
         return final_state, is_success
 
-    def _persist_execution_trace(self, execution_trace: List[Tuple[str, str, float]], input_task: str) -> None:
+    def _persist_execution_trace(self, execution_trace: List[Tuple[str, str]], input_task: str) -> None:
         """
         Append current run's execution edges to a JSONL file for later mining.
         Only stores edges (u, v), without rewards.
@@ -143,7 +84,7 @@ class Engine:
         from datetime import datetime
 
         # Prepare edges-only list
-        edges = [[u, v] for (u, v, _reward) in execution_trace]
+        edges = [[u, v] for (u, v) in execution_trace]
         record = {
             "timestamp": datetime.utcnow().isoformat(),
             "task": input_task,
@@ -156,110 +97,34 @@ class Engine:
 
         with open(trace_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    def get_top_frequent_subgraphs(self, top_n: int = 3, min_support: int = 3, max_k: int = 4) -> List[List[Tuple[str, str]]]:
-        """
-        Read persisted traces and return Top-N frequent subgraph candidates (as edge lists).
-        This does not perform abstraction/naming; it only mines candidates.
-        """
-        try:
-            miner = FrequentSubgraphMiner()
-            candidates = miner.mine_candidates(top_n=top_n, min_support=min_support, max_k=max_k)
-            self.logger.info(f"Top-{top_n} frequent candidates: {candidates}")
-            return candidates
-        except Exception as e:
-            self.logger.error(f"Mining frequent subgraphs failed: {e}")
-            return []
-
-    def _convert_to_graph(self, edge_list: List[List[str]]) -> Dict[str, List[str]]:
-        """
-        Convert the edge list to a graph.
-        """
-        graph = defaultdict(list)
-        for u, v in edge_list:
-            graph[u].append(v)
-        return dict(graph)
-
-    def reflect_and_learn(self, execution_trace: List[Tuple[str, str, float]], all_layers: List[Dict[str, GeneralState]]) -> None:
-        """
-        Reflect and learn from the execution trace.
-        """
-        is_reflect = check_layer_revisit(all_layers) or \
-                     check_long_path(all_layers, self.config.PATH_THRESHOLD)
-
-        if not is_reflect:
-            return # No need to reflect
-
-        # The reflector now takes the full execution history to build a rich representation
-        new_skill = self.reflector.abstract_skill(all_layers, execution_trace)
-        if not new_skill or not new_skill.get('skill_name'):
-            return  # No new skill to learn
-
-        skill_name = new_skill['skill_name']
-        if skill_name in self.agents:
-            return  # Skill already exists
-
-        # Check if the new skill will cause a cycle
-        if self._check_cycle(skill_name, new_skill['sub_graph']):
-            self.logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping learning.")
-            return  # Cycle detected, skip learning
-
-        composite_agent = CompositeAgent(
-            agent_name=skill_name,
-            config=self.config,
-            decision_space=self.decision_space,
-            sub_graph=new_skill['sub_graph'],
-            agents=self.agents,
-            document_manager=self.document_manager
-        )
-        self.register_agent(skill_name, composite_agent)
-
-        # Add the new skill to the decision space
-        state = new_skill['sub_graph'][0][1]
-        if '_1' in state:
-            state = state.replace('_1', '')
-        # entry_point = new_skill['skill_name']
-        self.decision_space.add_new_action(state, skill_name)
         
     def register_agent(self, agent_name: str, agent: BaseAgent, is_start: bool = False) -> None:
         self.agents[agent_name] = agent
         if is_start:
             self.start_agent = agent_name
 
-    def train(self, inputs: List[str], test_cases: List[List[str]]) -> List[Dict[str, Any]]:
+    def train(self, inputs: List[str]) -> List[Dict[str, Any]]:
         """
-        Train the MetaFlow on the given inputs and test cases.
+        Train the MetaFlow on the given inputs.
         """
         self.is_train = True
-        assert len(inputs) == len(test_cases), "Number of inputs must match number of test cases."
-        if self.graph_traverser is None:
-            self._init_decision_space()
 
         results = []
         self.logger.info(f"--- Training on {len(inputs)} samples ---")
-        for i, (input_task, tests) in enumerate(zip(inputs, test_cases)):
-            final_state, is_success = self._run_single_step(input_task, tests)
+        for i, input_task in enumerate(inputs):
+            final_state, is_success = self._run_single_step(input_task)
 
-            # Persist edges for mining and attempt abstraction if frequent patterns detected
             try:
                 # Recompute trace cheaply for persistence (edges only)
-                all_layers, execution_trace, _ = self.graph_traverser.traverse(
-                    self.start_agent, self._initialize_state(input_task), tests)
+                _, execution_trace, _ = self.graph_traverser.traverse(
+                    self.start_agent, self._initialize_state(input_task))
                 self._persist_execution_trace(execution_trace, input_task=input_task)
             except Exception as e:
                 self.logger.error(f"Persist trace during train failed: {e}")
 
-            try:
-                candidates = self.get_top_frequent_subgraphs(top_n=3, min_support=3, max_k=4)
-                if candidates:
-                    self._abstract_candidates_via_llm(candidates)
-            except Exception as e:
-                self.logger.error(f"Frequent subgraph abstraction failed: {e}")
-            # os.environ['WORKSPACE_ID'] = str(i + 1)
             time.sleep(10) # Avoid too many requests to the server
             results.append({
                 'input_task': input_task,
-                'test_cases': tests,
                 'final_state': final_state,
                 'is_success': is_success,
             })
@@ -268,14 +133,22 @@ class Engine:
         self.logger.info(f"--- Training Finished ---")
         return results
 
-    def run(self, input_task: str, test_cases: List[str]) -> str:
+    def run(self, input_task: str) -> str:
         """
-        Run the MetaFlow on the given input task and test cases.
+        Run the MetaFlow on the given input task.
         """
         self.is_train = False
-        if self.graph_traverser is None:
-            self._init_decision_space()
-        final_state, is_success = self._run_single_step(input_task, test_cases)
+        final_state, is_success = self._run_single_step(input_task)
+
+        # Audit file existence and versions
+        if self.document_manager:
+            print("\n--- Running Audits ---")
+            with open('document.md', 'r', encoding='utf-8') as f:
+                document_content = f.read()
+            audit_file_existence(document_content, 'workspace')
+            audit_file_versions(document_content, 'workspace')  
+            print("--- Audits Complete ---\n")
+
         return final_state
 
     def find_all_paths(self, graph: Dict[str, List[str]], start: str, end: str) -> List[List[str]]:
@@ -295,42 +168,4 @@ class Engine:
         dfs(start, [], all_paths)
         return all_paths
 
-    def _abstract_candidates_via_llm(self, candidates: List[List[Tuple[str, str]]]) -> None:
-        """
-        For each mined candidate subgraph, ask LLM to name and describe a skill, then register CompositeAgent.
-        Safe-guards: duplication and cycle checks.
-        """
-        for sub_graph in candidates:
-            try:
-                new_skill = self.reflector.abstract_skill_from_subgraph(sub_graph)
-                if not new_skill or not new_skill.get('skill_name'):
-                    continue
-                skill_name = new_skill['skill_name']
-                if skill_name in self.agents:
-                    # Already exists
-                    continue
-
-                # Cycle prevention
-                if self._check_cycle(skill_name, new_skill['sub_graph']):
-                    self.logger.warning(f"Cycle detected when adding skill {skill_name}. Skipping.")
-                    continue
-
-                # Register composite agent
-                composite_agent = CompositeAgent(
-                    agent_name=skill_name,
-                    config=self.config,
-                    decision_space=self.decision_space,
-                    sub_graph=new_skill['sub_graph'],
-                    agents=self.agents,
-                    document_manager=self.document_manager
-                )
-                self.register_agent(skill_name, composite_agent)
-
-                # Add to decision space as available action
-                state = new_skill['sub_graph'][0][1] if new_skill['sub_graph'] else skill_name
-                if isinstance(state, str) and '_1' in state:
-                    state = state.replace('_1', '')
-                self.decision_space.add_new_action(state, skill_name)
-                self.logger.info(f"Registered new composite skill: {skill_name}")
-            except Exception as e:
-                self.logger.error(f"Abstract/register candidate failed: {e}")
+    

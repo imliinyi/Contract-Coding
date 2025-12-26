@@ -5,123 +5,30 @@ from typing import Any, Dict, List, Tuple
 from langgraph.graph import END
 
 from MetaFlow.config import Config
-from MetaFlow.core.decision_space.decision_space import DecisionSpace
+from MetaFlow.core.memory.audit import check_missing_files, check_missing_specs
 from MetaFlow.core.memory.document_manager import DocumentManager
 from MetaFlow.core.memory.memory_processor import MemoryProcessor
 from MetaFlow.orchestration.runner import AgentRunner
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
-
 class GraphTraverser:
     def __init__(
         self,
         config: Config,
         agent_runner: AgentRunner,
-        decision_space: DecisionSpace,
         memory_processor: MemoryProcessor,
         document_manager: DocumentManager,
     ):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.agent_runner = agent_runner
-        self.decision_space = decision_space
         self.memory_processor = memory_processor
         self.termination_policy = self.config.TERMINATION_POLICY
         self.document_manager = document_manager
 
-    def sub_traverse(
-        self,
-        sub_graph: List[Dict[str, str]],
-        initial_states: GeneralState,
-        test_cases: List[str],
-    ) -> Tuple[List[Dict[str, GeneralState]], List[Tuple[str, str, float]], List[GeneralState]]:
-        """
-        Forward propagation through the layers of the graph.
-        """
-        execution_trace: List[Dict[str, str, float]] = []
-        all_layers: List[Dict[str, GeneralState]] = []
-        terminating_states: List[GeneralState] = []
-
-        # Build the forward graph
-        forward_graph = defaultdict(list)
-        for u, v in sub_graph:
-            forward_graph[u].append(v)
-
-        entry_points = forward_graph.get('START', [])
-        if not entry_points:
-            return [], [], []
-
-        current_layer_states = {agent_name: initial_states for agent_name in set(entry_points)}
-        executed_layers = 0
-
-        while current_layer_states and executed_layers < self.config.MAX_LAYERS:
-            all_layers.append(current_layer_states)
-            executed_layers += 1
-            next_layer_inputs = defaultdict(list)
-
-            layer_outputs = {}
-            # Begin per-layer document aggregation using the same base snapshot
-            base_version = self.document_manager.get_version()
-            try:
-                self.document_manager.begin_layer_aggregation(base_version)
-            except Exception:
-                pass
-            with ThreadPoolExecutor() as executor:
-                futures = {
-                    executor.submit(
-                        self.agent_runner.run,
-                        agent_name=agent_name,
-                        state=input_state,
-                        test_cases=test_cases,
-                        next_available_agents=[]
-                    ): agent_name
-                    for agent_name, input_state in current_layer_states.items()
-                }
-                for future in as_completed(futures):
-                    agent_name = futures[future]
-                    try:
-                        output_state = future.result()
-                        layer_outputs[agent_name] = output_state
-                    except Exception as e:
-                        self.logger.error(f"Agent {agent_name} failed with error: {e}")
-
-            # Commit per-layer aggregated document updates before propagating next layer
-            try:
-                self.document_manager.commit_layer_aggregation()
-            except Exception as e:
-                self.logger.error(f"Document layer aggregation commit failed: {e}")
-
-            for agent_name, output_state in layer_outputs.items():
-                successors = forward_graph.get(agent_name, [])
-                task_reqs = output_state.task_requirements
-                for successor in successors:
-                    # Record the execution trace
-                    execution_trace.append((agent_name, successor, 0.0))
-
-                    if successor == END:
-                        terminating_states.append(output_state)
-                    else:
-                        # Collect the output state for the successor agent
-                        sub_task = task_reqs.get(successor, '')
-                        new_state = output_state.model_copy()
-                        new_state.sub_task = sub_task
-                        next_layer_inputs[successor].append(new_state)
-
-            next_layer_states = {}
-            for agent_name, states in next_layer_inputs.items():
-                if len(states) > 1:
-                    merged_state = self.memory_processor.merge_memory(states)
-                    next_layer_states[agent_name] = merged_state
-                else:
-                    next_layer_states[agent_name] = states[0]
-
-            current_layer_states = next_layer_states
-
-        return all_layers, execution_trace, terminating_states
-
     def traverse(
-        self, start_agent: str, initial_states: Dict[str, GeneralState], test_cases: List[str]
+        self, start_agent: str, initial_states: Dict[str, GeneralState]
     ) -> Tuple[List[Dict[str, GeneralState]], List[Tuple[str, str, float]], List[GeneralState]]:
         """
         Forward propagation through the layers of the graph.
@@ -146,14 +53,13 @@ class GraphTraverser:
 
             with ThreadPoolExecutor() as executor:
                 # The logic for getting next_available_agents is the same for all agents in the layer
-                next_available_agents = self.decision_space.agents
+                next_available_agents = self.agent_runner.agents
 
                 futures = {
                     executor.submit(
                         self.agent_runner.run,
                         agent_name=agent_name,
                         state=state,
-                        test_cases=test_cases,
                         next_available_agents=next_available_agents
                     ): agent_name
                     for agent_name, state in current_level_agents.items()
@@ -187,6 +93,51 @@ class GraphTraverser:
             except Exception as e:
                 self.logger.error(f"Document layer aggregation commit failed: {e}")
 
+            # --- Mechanism 2 (Higher Priority): Spec Coverage Gate (2.1 vs 2.4) ---
+            doc_content = self.document_manager.get()
+            workspace_path = self.config.WORKSPACE_DIR
+            missing_specs = check_missing_specs(doc_content) if self.config.SPEC_GATING_ENABLED else []
+
+            if self.config.SPEC_GATING_ENABLED and missing_specs:
+                print(f"\n[Audit] Missing 2.4 specs for files listed in 2.1: {missing_specs}. Forcing Project_Manager only.")
+                for output in layer_outputs:
+                    # Override next and continuing agents: enforce spec-first gating
+                    output['next_agents'] = ["Project_Manager"]
+                    output['continuing_agents'] = ["Project_Manager"]
+                    output['is_terminating'] = False
+
+                    task_msg = (
+                        f"CRITICAL: The following files are listed under Directory Structure (2.1) but lack `Symbolic API Specifications` in 2.4: {missing_specs}. "
+                        f"Update the Collaborative Document to add complete 2.4 specs (File blocks) for these files before continuing."
+                    )
+                    if output['output_state'].task_requirements is None:
+                        output['output_state'].task_requirements = {}
+                    output['output_state'].task_requirements["Project_Manager"] = task_msg
+            else:
+                # --- Mechanism 1 (Lower Priority): Existence Check (Specs reference files missing in workspace)
+                missing = check_missing_files(doc_content, workspace_path)
+                if missing:
+                    print(f"\n[Audit] Files defined in 2.4 but missing in workspace: {missing}. Adding Project_Manager to next layer.")
+                    for output in layer_outputs:
+                        # Append Project_Manager instead of overriding
+                        if output['next_agents'] is None:
+                            output['next_agents'] = []
+                        if "Project_Manager" not in output['next_agents']:
+                            output['next_agents'].append("Project_Manager")
+
+                        if "Project_Manager" not in output['continuing_agents']:
+                            output['continuing_agents'].append("Project_Manager")
+
+                        output['is_terminating'] = False
+
+                        task_msg = (
+                            f"CRITICAL: The following files are defined in the Collaborative Document (2.4) but are missing in the workspace: {missing}. "
+                            f"Create these files and align implementations before resuming normal execution."
+                        )
+                        if output['output_state'].task_requirements is None:
+                            output['output_state'].task_requirements = {}
+                        output['output_state'].task_requirements["Project_Manager"] = task_msg
+
             num_terminating = sum([1 for o in layer_outputs if o['is_terminating']])
             num_total = len(layer_outputs)
 
@@ -202,17 +153,8 @@ class GraphTraverser:
                 continuing_agents = output['continuing_agents']
                 output_state = output['output_state']
 
-                success_rate = [self.agent_runner.agents[agent].success_rate if agent in self.agent_runner.agents and self.agent_runner.agents[agent] is not None else 1 for agent in next_agents]
-                group_reward = self.decision_space.calculate_group_reward(
-                    current_state=agent_name,
-                    action_group=next_agents,
-                    path_len=layer_index,
-                    success_rates=success_rate,
-                    learn_terminating_only=learn_terminating_only)
-
                 for next_agent in next_agents:
-                    reward = group_reward.get(next_agent, 0)
-                    execution_trace.append((agent_name, next_agent, reward))
+                    execution_trace.append((agent_name, next_agent))
 
                     if next_agent == END:
                         terminating_states.append(output_state)
