@@ -1,8 +1,6 @@
 import logging
 import os
 
-from MetaFlow.config import Config
-
 
 class PathFormatter(logging.Formatter):
     def format(self, record):
@@ -14,21 +12,27 @@ class PathFormatter(logging.Formatter):
         return super().format(record)
 
 
-def get_logger(log_path: str = Config.LOG_PATH, name: str = "MetaFlow"):
+def get_logger(log_path: str = "./agent.log", name: str = "MetaFlow"):
     logger = logging.getLogger(name)
 
+    desired = os.path.abspath(log_path)
+
     if logger.hasHandlers():
-        return logger
+        for h in list(logger.handlers):
+            if isinstance(h, logging.FileHandler):
+                if os.path.abspath(getattr(h, "baseFilename", "")) == desired:
+                    return logger
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
 
     logger.setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     formatter = PathFormatter('%(asctime)s - %(custom_path)s - %(levelname)s - %(message)s')
 
-    # Create log directory if it doesn't exist
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    os.makedirs(os.path.dirname(desired), exist_ok=True)
 
-    file_handler = logging.FileHandler(log_path, encoding='utf-8', mode='w')
+    file_handler = logging.FileHandler(desired, encoding='utf-8', mode='w')
 
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

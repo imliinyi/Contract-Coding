@@ -101,8 +101,8 @@ class DocumentManager:
                         self._document = (self._document or "") + sep + (content or "")
                         self._version += 1
                         self._history[self._version] = self._document
-                with open('document.md', "w", encoding="utf-8") as f:
-                    f.write(self._document)
+                    with open('document.md', "w", encoding="utf-8") as f:
+                        f.write(self._document)
 
             elif action_type == "update":
                 agent_name = action.get("agent_name", "")
@@ -131,9 +131,8 @@ class DocumentManager:
                             self._version += 1
                             self._history[self._version] = self._document
                             self.logger.error(f"Immediate range merge failed, appended content instead: {e}")
-
-            with open('document.md', "w", encoding="utf-8") as f:
-                f.write(self._document)
+                    with open('document.md', "w", encoding="utf-8") as f:
+                        f.write(self._document)
         
             # elif action_type == "delete":
             #     if agent_name in self._document:

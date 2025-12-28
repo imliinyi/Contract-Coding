@@ -1,18 +1,16 @@
 from abc import ABC, abstractmethod
 import json
 import re
-from tkinter import END
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langgraph.graph import END
 
 from MetaFlow.config import Config
+from MetaFlow.llm.client import LLM
 from MetaFlow.memory.document import DocumentManager
 from MetaFlow.memory.processor import MemoryProcessor
-from MetaFlow.llm.client import LLM
-from MetaFlow.prompts.agents_prompt import AGENT_DETAILS, get_agent_prompt
+from MetaFlow.prompts.agents_prompt import get_agent_prompt, AGENT_DETAILS
 from MetaFlow.prompts.system_prompt import CORE_SYSTEM_PROMPT
-from MetaFlow.utils.exception import EmptyTaskRequirementsError
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
@@ -28,9 +26,9 @@ class BaseAgent(ABC):
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
         self.llm = LLM(
+            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
             api_key=config.OPENAI_API_KEY,
             api_base=config.OPENAI_API_BASE_URL,
-            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
             max_tokens=config.OPENAI_API_MAX_TOKENS,
             temperature=config.OPENAI_API_TEMPERATURE
         )
@@ -73,9 +71,13 @@ class BaseAgent(ABC):
         def _describe(agent_name: str) -> str:
             return f"{agent_name}: {AGENT_DETAILS.get(agent_name, '')}"
         available_agents = ', '.join(_describe(agent_name) for agent_name in next_available_agents)
-        system_prompt = self.system_prompt.format(
-            available_agents=available_agents
-        )
+        system_prompt = self.system_prompt
+
+        if self.agent_name == "Project_Manager":
+            system_prompt = system_prompt + f"""
+                # Available Agents: {available_agents}  
+            """
+        
         prompt_template = """
         # User Overall Task
         {task_description}
@@ -178,37 +180,17 @@ class BaseAgent(ABC):
         raw_output = output_match.group(1).strip() if output_match else response_text
 
         task_requirements = None
-        task_reqs_json_str = self._parse_tag_with_json("task_requirements", response_text, expected_type=dict)
-        if task_reqs_json_str:
-            try:
-                raw_task_requirements = json.loads(task_reqs_json_str)
-
-                if isinstance(raw_task_requirements, dict):
-                    task_requirements = {}
-                    for k, v in raw_task_requirements.items():
-                        if isinstance(v, list):
-                            task_requirements[k] = "\n".join(str(item) for item in v)
-                        else:
-                            task_requirements[k] = str(v)
-                else:
-                    task_requirements = None
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON format in <task_requirements> tag: {e}")
+        # We don't rely on task_requirements for scheduling anymore, but we keep it optional for logging if agents still output it.
+        # But we remove the strict validation.
         
-        if not task_requirements:
-            raise EmptyTaskRequirementsError("The <task_requirements> tag is missing, empty, or invalid.")
-        
-        next_agents = list(task_requirements.keys() or [END])
-        # next_agents = [agent for agent in next_agents if agent in self.salaries.keys()] or [END]
-
         return GeneralState(
             task=current_state.task,
             sub_task=current_state.sub_task,
             role=self.agent_name,
             thinking=thinking,
             output=raw_output,
-            next_agents=next_agents,
-            task_requirements=task_requirements,
+            next_agents=[], # No longer determined by LLM directly
+            task_requirements={}, # Optional
         )
 
   

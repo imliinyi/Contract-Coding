@@ -1,6 +1,10 @@
 import json
-from typing import List, Dict
 from duckduckgo_search import DDGS
+
+from MetaFlow.utils.log import get_logger
+
+
+logger = get_logger()
 
 def search_web(query: str) -> str:
     """
@@ -12,7 +16,7 @@ def search_web(query: str) -> str:
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
-            print(f"Search results for query '{query}': {results}")
+            logger.info(f"Search results for query '{query}': {results}")
         
         if not results:
             return json.dumps({"message": "No results found for the query."})

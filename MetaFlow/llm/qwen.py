@@ -3,21 +3,20 @@ import json
 import time
 from typing import Any, Dict, List
 
-from openai import AzureOpenAI
+from openai import OpenAI
 
 from MetaFlow.utils.log import get_logger
 
 logger = get_logger()
 
 
-class LLM(ABC):
-    def __init__(self, api_key: str, api_base: str,  deployment_name: str, max_tokens: int = 10240, temperature: float = 0.0):
-        self.client = AzureOpenAI(
+class Qwen(ABC):
+    def __init__(self, api_key: str, api_base: str, model: str, max_tokens: int = 10240, temperature: float = 0.0):
+        self.client = OpenAI(
             api_key=api_key,
-            api_version="2024-03-01-preview",
             base_url=api_base,
         )
-        self.deployment_name = deployment_name
+        self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.prompt_tokens = 0
@@ -25,12 +24,11 @@ class LLM(ABC):
         
     def chat(self, messages: List[Dict[str, Any]]) -> str:
         response = self.client.chat.completions.create(
-            model=self.deployment_name,
+            model=self.model,
             max_tokens=self.max_tokens,
             messages=messages,
-            timeout=30,
+            
             temperature=self.temperature,
-            extra_headers={"X-TT-LOGID": ""},
         )
 
         self.prompt_tokens = response.usage.prompt_tokens
@@ -56,12 +54,11 @@ class LLM(ABC):
             })
 
         response = self.client.chat.completions.create(
-            model=self.deployment_name,
+            model=self.model,
             max_tokens=self.max_tokens,
             messages=messages,
-            timeout=60,
+            
             temperature=self.temperature,
-            extra_headers={"X-TT-LOGID": ""},
         )
 
         self.prompt_tokens = response.usage.prompt_tokens
@@ -89,21 +86,20 @@ class LLM(ABC):
 
         max_iterations = 10
         current_iteration = 0
-        last_content = ""
+        is_tool_call = False
 
         while current_iteration < max_iterations:
             current_iteration += 1
 
             try:
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.model,
                     messages=messages,
                     tools=tool_schemas if tool_schemas else None,
                     tool_choice="auto",  
-                    timeout=60, 
+                     
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
-                    extra_headers={"X-TT-LOGID": ""},
                 )
                 
                 if hasattr(response, 'usage'):
@@ -112,34 +108,23 @@ class LLM(ABC):
                     logger.info(f"Token Usage - Prompt: {response.usage.prompt_tokens}, Completion: {response.usage.completion_tokens}")
                 
                 response_message = response.choices[0].message
-
+                
+                # IMPORTANT: Qwen requires the tool call message to be appended even if content is None/empty
+                # Ensure content is at least an empty string if None
                 if response_message.content is None:
                     response_message.content = ""
-                last_content = response_message.content
+                
+                # Append the assistant's response (which may include tool calls)
+                messages.append(response_message)
                 
                 if hasattr(response_message, 'tool_calls') and response_message.tool_calls:
                     logger.info(f"Tool Calls: {[tc.function.name for tc in response_message.tool_calls]}")
-                    
-                    messages.append({
-                        "role": response_message.role,
-                        "content": response_message.content,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": tc.type,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments
-                                }
-                            }
-                            for tc in response_message.tool_calls
-                        ]
-                    })
                     
                     # Execute each tool call
                     for tool_call in response_message.tool_calls:
                         function_name = tool_call.function.name
                         function_to_call = available_functions.get(function_name)
+                        is_tool_call = True
                         
                         if function_to_call:
                             try:
@@ -149,11 +134,10 @@ class LLM(ABC):
                                 # Execute the tool function
                                 function_response = function_to_call(**function_args)
                                 execution_result = str(function_response)
-                                # logger.info(f"Tool {function_name} execution result: {execution_result[:200]}..." if len(execution_result) > 200 else f"Tool {function_name} execution result: {execution_result}")
 
                                 messages.append({
-                                    "tool_call_id": tool_call.id,
                                     "role": "tool",
+                                    "tool_call_id": tool_call.id,
                                     "name": function_name,
                                     "content": execution_result
                                 })
@@ -161,8 +145,8 @@ class LLM(ABC):
                                 error_msg = f"Tool {function_name} execution error: {e}"
                                 logger.error(error_msg)
                                 messages.append({
-                                    "tool_call_id": tool_call.id,
                                     "role": "tool",
+                                    "tool_call_id": tool_call.id,
                                     "name": function_name,
                                     "content": error_msg
                                 })
@@ -170,21 +154,51 @@ class LLM(ABC):
                             error_msg = f"Tool '{function_name}' not found."
                             logger.error(error_msg)
                             messages.append({
-                                "tool_call_id": tool_call.id,
                                 "role": "tool",
+                                "tool_call_id": tool_call.id,
                                 "name": function_name,
                                 "content": error_msg
                             })
                 else:
-                    # No more tool calls, return the model's final response content
-                    messages.append({"role": response_message.role, "content": response_message.content})
+                    # No tool calls, this is the final response or a direct text response
                     break
             except Exception as e:
                 error_msg = f"LLM call error: {e}"
                 logger.error(error_msg)
                 time.sleep(10)
+                
+        # Final summarization step: Generate complete output based on the conversation history.
+        if is_tool_call:
+            try:
+                summary_instruction = {
+                    "role": "system",
+                    "content": """
+    Based on the tool executions and conversation history, provide a complete response that includes:
+    1. A brief summary of what was accomplished (<thinking> section)
+    2. A clear description of the work done (<output> section)  
+    3. Any document updates if needed (<document_action> section)
 
-        if current_iteration >= max_iterations:
-            logger.warning(f"Max tool call iterations reached: {max_iterations}")
+    Ensure your response follows the exact format requirements with all required sections.
+    """
+                }
+                messages.append(summary_instruction)
+                
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"Error during final summarization: {e}")
+                return "Error generating summary."
 
-        return last_content
+        # Return the content of the last message if it's from the assistant
+        if messages and hasattr(messages[-1], 'content'):
+            return messages[-1].content
+        elif messages and isinstance(messages[-1], dict):
+            return messages[-1].get("content", "")
+            
+        return ""

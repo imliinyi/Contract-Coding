@@ -10,8 +10,7 @@ from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
 
 
-
-class AgentRunner: # This now acts as our AgentExecutor
+class AgentRunner:
     def __init__(
         self,
         config: Config,
@@ -26,12 +25,11 @@ class AgentRunner: # This now acts as our AgentExecutor
         self.document_manager = document_manager
 
     def run(
-        self, 
-        agent_name: str, 
-        state: GeneralState, 
-        next_available_agents: list
+        self,
+        agent_name: str,
+        state: GeneralState,
+        next_available_agents: list,
     ) -> GeneralState:
-        """Executes a single agent and returns the resulting state."""
         agent = self.agents.get(agent_name)
         if not agent:
             self.logger.warning(f"Agent {agent_name} not found, skipping.")
@@ -47,3 +45,6 @@ class AgentRunner: # This now acts as our AgentExecutor
         )
 
         return output_state
+
+
+AgentExecutor = AgentRunner

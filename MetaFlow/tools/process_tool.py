@@ -4,6 +4,11 @@ import signal
 import threading
 from typing import Dict
 
+from MetaFlow.utils.log import get_logger
+
+
+logger = get_logger()
+
 # A dictionary to keep track of running processes, allowing them to be killed by the timer.
 _running_processes: Dict[int, subprocess.Popen] = {}
 
@@ -12,10 +17,10 @@ def _kill_process_after_timeout(pid: int):
     Internal function called by a Timer to terminate a process.
     """
     if pid not in _running_processes:
-        print(f"Process {pid} already stopped or not found.")
+        logger.info(f"Process {pid} already stopped or not found.")
         return
 
-    print(f"Timeout of 60s reached for process {pid}. Terminating...")
+    logger.warning(f"Timeout reached for process {pid}. Terminating...")
     process = _running_processes[pid]
     try:
         # Send SIGTERM for graceful shutdown

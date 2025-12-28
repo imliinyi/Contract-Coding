@@ -1,4 +1,5 @@
 import re
+import threading
 from typing import Dict, List
 
 from MetaFlow.config import Config
@@ -21,18 +22,21 @@ class MemoryProcessor:
         self.memory_window = memory_window
         self.memory: Dict[str, List[GeneralState]] = {}
         self.logger = get_logger(config.LOG_PATH)
+        self._lock = threading.RLock()
 
     def summarize_memory(self, agent_name: str):
         """
         Summarizes the oldest states in the memory for the specified agent.
         """
-        if agent_name not in self.memory or len(self.memory[agent_name]) < self.memory_window:
-            return
+        with self._lock:
+            if agent_name not in self.memory or len(self.memory[agent_name]) < self.memory_window:
+                return
 
         # Select states to summarize (e.g., the oldest half)
         summarize_count = self.memory_window // 2
-        states_to_summarize = self.memory[agent_name][:summarize_count]
-        remaining_states = self.memory[agent_name][summarize_count:]
+        with self._lock:
+            states_to_summarize = self.memory[agent_name][:summarize_count]
+            remaining_states = self.memory[agent_name][summarize_count:]
 
         if not states_to_summarize:
             return
@@ -55,26 +59,28 @@ class MemoryProcessor:
         )
 
         # Replace the summarized states with the new summary message
-        self.memory[agent_name] = [summary_message] + remaining_states
+        with self._lock:
+            self.memory[agent_name] = [summary_message] + remaining_states
 
     def add_message(self, agent_name: str, message: GeneralState):
         """
         Adds a state to the memory of the specified agent.
         """
-        if agent_name not in self.memory:
-            self.memory[agent_name] = []
-        
-        self.memory[agent_name].append(message)
+        with self._lock:
+            if agent_name not in self.memory:
+                self.memory[agent_name] = []
+            self.memory[agent_name].append(message)
+            need_summary = len(self.memory[agent_name]) > self.memory_window
 
-        # Trigger summarization when memory grows beyond the window
-        if len(self.memory[agent_name]) > self.memory_window:
+        if need_summary:
             self.summarize_memory(agent_name)
 
     def get_memory(self, agent_name: str) -> List[GeneralState]:
         """
         Gets the current memory for the specified agent.
         """
-        return self.memory.get(agent_name, [])
+        with self._lock:
+            return list(self.memory.get(agent_name, []))
 
     def _normalize_agent_name(self, agent_name: str) -> str:
         """

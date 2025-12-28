@@ -178,11 +178,17 @@ def get_spec_files(document_content: str) -> set[str]:
 
     # Patterns (robust to bold markup and colon placement). Python files only (.py)
     # Matches: **File:** `path.py`  OR  **File**: path.py  OR  File: path.py
-    file_token_pat = re.compile(r"(?i)(?:\*\*\s*File\s*:?-?\s*\*\*|\bFile\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)" )
+    # Also supports **Path:** which is sometimes used in documents.
+    file_token_pat = re.compile(r"(?i)(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)" )
+    
     # Matches list form: - **File:** path.py
-    list_file_token_pat = re.compile(r"(?i)-\s*(?:\*\*\s*File\s*:?-?\s*\*\*|\bFile\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)")
+    list_file_token_pat = re.compile(r"(?i)-\s*(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)")
+    
     # Matches status bullets: - **path.py**: DONE
     status_bullet_pat = re.compile(r"(?i)-\s*\*\*([^*\n]+?\.py)\*\*\s*:\s*(DONE|TODO|IN_PROGRESS|ERROR)")
+    
+    # Matches Header form: #### path.py
+    header_pat = re.compile(r"^####\s*`?([A-Za-z0-9_./\\-]+\.py)", re.MULTILINE)
 
     for scope in search_scopes:
         if not scope:
@@ -192,6 +198,8 @@ def get_spec_files(document_content: str) -> set[str]:
         for m in list_file_token_pat.finditer(scope):
             add_path(m.group(1))
         for m in status_bullet_pat.finditer(scope):
+            add_path(m.group(1))
+        for m in header_pat.finditer(scope):
             add_path(m.group(1))
 
     return out
