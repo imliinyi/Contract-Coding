@@ -1,15 +1,14 @@
 from abc import ABC, abstractmethod
 import json
 import re
+import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
-
-from langgraph.graph import END
 
 from MetaFlow.config import Config
 from MetaFlow.llm.client import LLM
 from MetaFlow.memory.document import DocumentManager
 from MetaFlow.memory.processor import MemoryProcessor
-from MetaFlow.prompts.agents_prompt import get_agent_prompt, AGENT_DETAILS
+from MetaFlow.prompts.agents_prompt import AGENT_DETAILS, get_agent_prompt
 from MetaFlow.prompts.system_prompt import CORE_SYSTEM_PROMPT
 from MetaFlow.utils.log import get_logger
 from MetaFlow.utils.state import GeneralState
@@ -25,17 +24,24 @@ class BaseAgent(ABC):
         self.agent_prompt = agent_prompt
         self.config = config
         self.logger = get_logger(config.LOG_PATH)
-        self.llm = LLM(
-            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
-            api_key=config.OPENAI_API_KEY,
-            api_base=config.OPENAI_API_BASE_URL,
-            max_tokens=config.OPENAI_API_MAX_TOKENS,
-            temperature=config.OPENAI_API_TEMPERATURE
-        )
+        self._llm_local = threading.local()
 
         self.system_prompt = self.get_system_prompt()
         self.custom_tools = custom_tools or []
 
+    @property
+    def llm(self) -> LLM:
+        llm = getattr(self._llm_local, "llm", None)
+        if llm is None:
+            llm = LLM(
+                deployment_name=self.config.OPENAI_DEPLOYMENT_NAME,
+                api_key=self.config.OPENAI_API_KEY,
+                api_base=self.config.OPENAI_API_BASE_URL,
+                max_tokens=self.config.OPENAI_API_MAX_TOKENS,
+                temperature=self.config.OPENAI_API_TEMPERATURE,
+            )
+            self._llm_local.llm = llm
+        return llm
 
     @staticmethod
     def validate_state(state: GeneralState | None) -> bool:
@@ -152,6 +158,12 @@ class BaseAgent(ABC):
                         action['agent_name'] = self.agent_name
                         action['base_version'] = document_manager.get_version()
                         # Keep only update semantics; merge handled by layer aggregator based on base_version
+
+                    if action_type == 'add' and action.get('section') is not None and self.agent_name != 'Project_Manager':
+                        self.logger.warning(
+                            f"Ignored section add by non-PM agent: {self.agent_name} section={action.get('section')}"
+                        )
+                        continue
                     
                     processed_actions.append(action)
 

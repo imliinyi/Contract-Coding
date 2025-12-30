@@ -11,18 +11,27 @@ from MetaFlow.utils.log import get_logger
 
 class MemoryProcessor:
     def __init__(self, config: Config, agents: List[str], memory_window: int=5):
-        self.llm = LLM(
-            deployment_name=config.OPENAI_DEPLOYMENT_NAME,
-            api_key=config.OPENAI_API_KEY,
-            api_base=config.OPENAI_API_BASE_URL,
-            max_tokens=config.OPENAI_API_MAX_TOKENS,
-            temperature=config.OPENAI_API_TEMPERATURE,
-        )
+        self.config = config
+        self._llm_local = threading.local()
         self.agents = agents
         self.memory_window = memory_window
         self.memory: Dict[str, List[GeneralState]] = {}
         self.logger = get_logger(config.LOG_PATH)
         self._lock = threading.RLock()
+
+    @property
+    def llm(self) -> LLM:
+        llm = getattr(self._llm_local, "llm", None)
+        if llm is None:
+            llm = LLM(
+                deployment_name=self.config.OPENAI_DEPLOYMENT_NAME,
+                api_key=self.config.OPENAI_API_KEY,
+                api_base=self.config.OPENAI_API_BASE_URL,
+                max_tokens=self.config.OPENAI_API_MAX_TOKENS,
+                temperature=self.config.OPENAI_API_TEMPERATURE,
+            )
+            self._llm_local.llm = llm
+        return llm
 
     def summarize_memory(self, agent_name: str):
         """

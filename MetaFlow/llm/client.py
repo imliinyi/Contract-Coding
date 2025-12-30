@@ -10,6 +10,22 @@ from MetaFlow.utils.log import get_logger
 logger = get_logger()
 
 
+def _is_token_limit_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(
+        s in msg
+        for s in (
+            "maximum context length",
+            "context_length_exceeded",
+            "too many tokens",
+            "token limit",
+            "exceeds the maximum context",
+            "maximum tokens",
+            "reduce the length",
+        )
+    )
+
+
 class LLM(ABC):
     def __init__(self, api_key: str, api_base: str,  deployment_name: str, max_tokens: int = 10240, temperature: float = 0.0):
         self.client = AzureOpenAI(
@@ -24,14 +40,25 @@ class LLM(ABC):
         self.completion_tokens = 0
         
     def chat(self, messages: List[Dict[str, Any]]) -> str:
-        response = self.client.chat.completions.create(
-            model=self.deployment_name,
-            max_tokens=self.max_tokens,
-            messages=messages,
-            timeout=30,
-            temperature=self.temperature,
-            extra_headers={"X-TT-LOGID": ""},
-        )
+        retry = 0
+        while True:
+            retry += 1
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    max_tokens=self.max_tokens,
+                    messages=messages,
+                    timeout=30,
+                    temperature=self.temperature,
+                    extra_headers={"X-TT-LOGID": ""},
+                )
+                break
+            except Exception as e:
+                sleep_s = 30 if _is_token_limit_error(e) else 10
+                logger.error(f"LLM call error: {e}")
+                time.sleep(sleep_s)
+                if retry >= 3:
+                    raise
 
         self.prompt_tokens = response.usage.prompt_tokens
         self.completion_tokens = response.usage.completion_tokens
@@ -55,14 +82,25 @@ class LLM(ABC):
                 ]
             })
 
-        response = self.client.chat.completions.create(
-            model=self.deployment_name,
-            max_tokens=self.max_tokens,
-            messages=messages,
-            timeout=60,
-            temperature=self.temperature,
-            extra_headers={"X-TT-LOGID": ""},
-        )
+        retry = 0
+        while True:
+            retry += 1
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    max_tokens=self.max_tokens,
+                    messages=messages,
+                    timeout=60,
+                    temperature=self.temperature,
+                    extra_headers={"X-TT-LOGID": ""},
+                )
+                break
+            except Exception as e:
+                sleep_s = 30 if _is_token_limit_error(e) else 10
+                logger.error(f"LLM call error: {e}")
+                time.sleep(sleep_s)
+                if retry >= 3:
+                    raise
 
         self.prompt_tokens = response.usage.prompt_tokens
         self.completion_tokens = response.usage.completion_tokens
@@ -182,7 +220,7 @@ class LLM(ABC):
             except Exception as e:
                 error_msg = f"LLM call error: {e}"
                 logger.error(error_msg)
-                time.sleep(10)
+                time.sleep(30 if _is_token_limit_error(e) else 10)
 
         if current_iteration >= max_iterations:
             logger.warning(f"Max tool call iterations reached: {max_iterations}")
