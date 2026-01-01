@@ -31,7 +31,8 @@ class AgentForge:
         if capability.MATH:
             tools.append(solve_math_expression)
         if capability.SEARCH:
-            tools.append(search_web)
+            # tools.append(search_web)
+            pass
         if capability.FILE:
             tools.extend(build_file_tools(self.config.WORKSPACE_DIR))
 

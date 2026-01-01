@@ -412,4 +412,4 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
         },
     }
 
-    return [file_tree, write_file, list_directory, read_file, read_lines, update_file_lines, add_code, code_outline]
+    return [file_tree, write_file, list_directory, read_file, read_lines, code_outline]

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import ast
 import json
 import re
 import threading
@@ -106,77 +107,144 @@ class BaseAgent(ABC):
         """
         raise NotImplementedError("This method should be implemented by a subclass.")
 
-    def _parse_tag_with_json(self, tag_name: str, text: str, expected_type: Union[type, None] = None) -> Optional[str]:
-        """
-        A robust parser to extract JSON content from a specific tag, handling various formats.
-        It first finds the tag, then extracts the full JSON object/list from within.
-        """
-        # A simple regex to find the content between the tags, ignoring markdown noise
-        pattern = re.compile(rf"<{tag_name}>(.*?)</{tag_name}>", re.DOTALL)
-        match = pattern.search(text)
+    def _extract_tag_blocks(self, tag_name: str, text: str) -> List[str]:
+        pattern = re.compile(rf"<{tag_name}>([\s\S]*?)</{tag_name}>", re.IGNORECASE)
+        return [m.group(1).strip() for m in pattern.finditer(text or "")]
 
-        if not match:
-            # Fallback for markdown header format
-            pattern_md = re.compile(rf"###\s*<{tag_name}>\s*\n```json(.*?)\n```", re.DOTALL)
-            match = pattern_md.search(text)
+    def _extract_balanced_json(self, s: str, expected_type: Union[type, None] = None) -> Optional[str]:
+        raw = (s or "").strip()
+        if not raw:
+            return None
 
-        if match:
-            content_str = match.group(1).strip()
-            
-            # Determine the start and end characters based on expected type or content
-            start_char, end_char = None, None
-            if expected_type is list or content_str.startswith('['):
-                start_char, end_char = '[', ']'
-            elif expected_type is dict or content_str.startswith('{'):
-                start_char, end_char = '{', '}'
+        start_candidates: List[str]
+        if expected_type is list:
+            start_candidates = ['[']
+        elif expected_type is dict:
+            start_candidates = ['{']
+        else:
+            start_candidates = ['[', '{']
 
-            if start_char:
-                start_pos = content_str.find(start_char)
-                last_pos = content_str.rfind(end_char)
-                if start_pos != -1 and last_pos > start_pos:
-                    return content_str[start_pos : last_pos + 1]
+        start_idx = -1
+        start_ch = ''
+        for ch in start_candidates:
+            i = raw.find(ch)
+            if i != -1 and (start_idx == -1 or i < start_idx):
+                start_idx = i
+                start_ch = ch
+        if start_idx == -1:
+            return None
 
-            # If no specific JSON structure is found, return the raw content for simple cases
-            return content_str
-            
+        end_ch = ']' if start_ch == '[' else '}'
+
+        in_str = False
+        esc = False
+        depth = 0
+        for i in range(start_idx, len(raw)):
+            c = raw[i]
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if c == '\\':
+                    esc = True
+                    continue
+                if c == '"':
+                    in_str = False
+                continue
+
+            if c == '"':
+                in_str = True
+                continue
+
+            if c == start_ch:
+                depth += 1
+                continue
+            if c == end_ch:
+                depth -= 1
+                if depth == 0:
+                    return raw[start_idx : i + 1]
+
         return None
+
+    def _parse_tag_with_json(self, tag_name: str, text: str, expected_type: Union[type, None] = None) -> Optional[str]:
+        blocks = self._extract_tag_blocks(tag_name, text)
+        if not blocks:
+            pattern_md = re.compile(rf"###\s*<{tag_name}>\s*\n```json([\s\S]*?)\n```", re.IGNORECASE)
+            m = pattern_md.search(text or "")
+            if m:
+                blocks = [m.group(1).strip()]
+        if not blocks:
+            return None
+
+        extracted = self._extract_balanced_json(blocks[0], expected_type=expected_type)
+        return extracted or blocks[0]
 
     def _parse_document_action(self, response_text: str, document_manager: DocumentManager):
         """
         Parses the <document_action> tag and executes the actions using the DocumentManager.
         """
-        action_json_str = self._parse_tag_with_json("document_action", response_text, expected_type=list)
-        if action_json_str:
+        blocks = self._extract_tag_blocks("document_action", response_text)
+        if not blocks:
+            return
+
+        all_actions: List[Dict[str, Any]] = []
+        last_err: Optional[Exception] = None
+        for raw_block in blocks:
+            payload = self._extract_balanced_json(raw_block, expected_type=list) or raw_block
+            if not payload.strip():
+                continue
+
+            parsed = None
             try:
-                actions = json.loads(action_json_str)
-                
-                processed_actions = []
-                for action in actions:
-                    action_type = action.get('type')
-                    
-                    if action_type in ('add', 'update'):
-                        action['agent_name'] = self.agent_name
-                        action['base_version'] = document_manager.get_version()
-                        # Keep only update semantics; merge handled by layer aggregator based on base_version
+                parsed = json.loads(payload)
+            except Exception as e:
+                last_err = e
+                try:
+                    parsed = ast.literal_eval(payload)
+                except Exception as e2:
+                    last_err = e2
+                    parsed = None
 
-                    if action_type == 'add' and action.get('section') is not None and self.agent_name != 'Project_Manager':
-                        self.logger.warning(
-                            f"Ignored section add by non-PM agent: {self.agent_name} section={action.get('section')}"
-                        )
-                        continue
-                    
-                    processed_actions.append(action)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
 
-                if processed_actions:
-                    try:
-                        if hasattr(document_manager, 'is_aggregating') and document_manager.is_aggregating():
-                            document_manager.queue_actions(processed_actions)
-                        else:
-                            document_manager.execute_actions(processed_actions)
-                    except Exception as e:
-                        self.logger.error(f"Document action handling failed: {e}")
-            except (json.JSONDecodeError, TypeError) as e:
-                self.logger.error(f"Failed to parse or execute document actions: {e}")
+            if not isinstance(parsed, list):
+                continue
+
+            for a in parsed:
+                if isinstance(a, dict):
+                    all_actions.append(a)
+
+        if not all_actions:
+            if last_err is not None:
+                raise last_err
+            return
+
+        processed_actions = []
+        for action in all_actions:
+            action_type = action.get('type')
+
+            if action_type in ('add', 'update'):
+                action['agent_name'] = self.agent_name
+                action['base_version'] = document_manager.get_version()
+
+            if (
+                action_type == 'add'
+                and action.get('section') is not None
+                and self.agent_name not in ('Project_Manager', 'Architect')
+            ):
+                self.logger.warning(
+                    f"Ignored section add by non-PM agent: {self.agent_name} section={action.get('section')}"
+                )
+                continue
+
+            processed_actions.append(action)
+
+        if processed_actions:
+            if hasattr(document_manager, 'is_aggregating') and document_manager.is_aggregating():
+                document_manager.queue_actions(processed_actions)
+            else:
+                document_manager.execute_actions(processed_actions)
 
     def _parse_response(self, response_text: str, document_manager: DocumentManager, current_state: GeneralState) -> GeneralState:
         """

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from typing import Dict, List
 
@@ -56,6 +57,12 @@ class LLMAgent(BaseAgent):
         inputs = memory_history + system_inputs
         # inputs = system_inputs
         retry = 0
+        target_file = None
+        if state.sub_task:
+            m = re.search(r"\b(?:Implement/Fix|Fix)\s+([^\s]+\.[A-Za-z0-9_]+)\b", state.sub_task)
+            if m:
+                target_file = m.group(1).strip()
+        is_impl_agent = self.agent_name in {"Backend_Engineer", "Frontend_Engineer", "Algorithm_Engineer"}
         while retry < 3:
             if self.custom_tools:
                 raw_response = self.llm.chat_with_tools(messages=inputs, tools=self.custom_tools)
@@ -72,6 +79,21 @@ class LLMAgent(BaseAgent):
             try:
                 output_state = self._parse_response(raw_response, document_manager, state)
                 # self.logger.info(f"==========Parsed Output State: {output_state}")
+                if is_impl_agent and target_file:
+                    abs_target = os.path.join(self.config.WORKSPACE_DIR, target_file)
+                    if not os.path.exists(abs_target):
+                        retry += 1
+                        inputs.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"Hard requirement: you did not create/update the required file '{target_file}'. "
+                                    f"You MUST call write_file with path='{target_file}' in this attempt. "
+                                    "Do not finish without creating the file and updating the document status to DONE."
+                                ),
+                            }
+                        )
+                        continue
                 break
             except (json.JSONDecodeError, ValidationError, EmptyTaskRequirementsError) as e:
                 self.logger.error(f"Attempt {retry + 1} failed with parsing error: {e}")

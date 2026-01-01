@@ -27,50 +27,125 @@ def _extract_directory_structure_paths(document_content: str) -> list[str]:
     Extract file paths from directory structure trees within code blocks.
     Handles standard tree formats (using characters like |, -, +, `) and indentation.
     """
-    paths = []
-    # Find all code blocks
-    code_blocks = re.findall(r"```(?:[\w]*\n)?([\s\S]*?)```", document_content)
-    
-    for block_content in code_blocks:
-        # Heuristic: check if it looks like a file tree containing "workspace/" or tree characters
-        if not ("workspace/" in block_content or "|--" in block_content or "|__" in block_content or "├──" in block_content):
-            continue
-            
+    def _extract_directory_structure_section_text(text: str) -> str:
+        lines = (text or "").splitlines()
+        start = None
+        for i, ln in enumerate(lines):
+            if ln.strip() in ("### 2.1 Directory Structure", "### Directory Structure"):
+                start = i + 1
+                break
+        if start is None:
+            return ""
+
+        end = len(lines)
+        for j in range(start, len(lines)):
+            if lines[j].strip().startswith("### "):
+                end = j
+                break
+        return "\n".join(lines[start:end]).strip("\n")
+
+    def _normalize_tree_path(path: str) -> str:
+        p = (path or "").strip().replace('\\', '/')
+        while p.startswith('./'):
+            p = p[2:]
+        while p.startswith('workspace/'):
+            p = p.replace('workspace/', '', 1)
+        parts = [x for x in p.split('/') if x]
+        return "/".join(parts)
+
+    def _strip_common_root_prefix(paths: list[str]) -> list[str]:
+        if len(paths) < 2:
+            return paths
+
+        split = [p.split('/') for p in paths if p]
+        if len(split) < 2:
+            return paths
+
+        min_len = min(len(s) for s in split)
+        if min_len <= 1:
+            return paths
+
+        common: list[str] = []
+        for idx in range(min_len - 1):
+            seg = split[0][idx]
+            if all(len(s) > idx and s[idx] == seg for s in split):
+                common.append(seg)
+            else:
+                break
+
+        if not common:
+            return paths
+
+        anchor_top_levels = {
+            'core', 'entities', 'systems', 'ui', 'tests',
+            'src', 'backend', 'frontend',
+        }
+
+        cut = 0
+        for seg in common:
+            if seg in anchor_top_levels:
+                break
+            cut += 1
+
+        if cut <= 0:
+            return paths
+
+        out: list[str] = []
+        for s in split:
+            if len(s) <= cut:
+                out.append('/'.join(s))
+            else:
+                out.append('/'.join(s[cut:]))
+        return out
+
+    def _extract_tree_paths_from_text(block_content: str) -> list[str]:
+        if not ("workspace/" in block_content or "|--" in block_content or "|__" in block_content or "├──" in block_content or "└" in block_content):
+            return []
+
+        out: list[str] = []
         lines = block_content.splitlines()
-        path_stack = [] # List of (indent_depth, name)
-        
+        path_stack = []  # List of (indent_depth, name)
+
         for line in lines:
-            # Skip empty lines
-            if not line.strip(): continue
-            
-            # Regex to separate prefix (indentation + tree chars) from name
-            # Matches: (prefix)(name)
-            # Prefix includes spaces, tabs, and tree drawing characters
+            if not line.strip():
+                continue
+
             match = re.match(r"^([ \t\|`\+\-\\\u2500-\u257f]*)(.*)$", line)
-            if not match: continue
-            
+            if not match:
+                continue
+
             prefix, name = match.groups()
             name = name.strip()
-            
-            if not name: continue
-            
-            # Calculate indentation depth based on prefix length
+            if not name:
+                continue
+
             depth = len(prefix)
-            
-            # Pop from stack until we find the parent (item with strictly smaller depth)
+
             while path_stack and path_stack[-1][0] >= depth:
                 path_stack.pop()
-                
+
             path_stack.append((depth, name))
-            
-            # If it looks like a file (has extension), add to paths
+
             if _token_looks_like_path(name):
-                # Construct full path from stack names
-                # Remove trailing slashes from directory names in stack
                 clean_stack_names = [p[1].rstrip('/') for p in path_stack]
                 full_path = "/".join(clean_stack_names)
-                paths.append(full_path)
-                
+                out.append(_normalize_tree_path(full_path))
+
+        return out
+
+    paths: list[str] = []
+
+    code_blocks = re.findall(r"```(?:[\w]*\n)?([\s\S]*?)```", document_content)
+    for block_content in code_blocks:
+        paths.extend(_extract_tree_paths_from_text(block_content))
+
+    if not paths:
+        section_text = _extract_directory_structure_section_text(document_content)
+        if section_text:
+            paths.extend(_extract_tree_paths_from_text(section_text))
+
+    paths = [p for p in paths if p]
+    paths = _strip_common_root_prefix(paths)
     return paths
 
 def _extract_backtick_paths(document_content: str) -> list[str]:

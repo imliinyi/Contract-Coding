@@ -167,9 +167,15 @@ class DocumentManager:
                     section = action.get("section")
                     if section is not None:
                         agent_name = action.get("agent_name", "")
-                        if agent_name != "Project_Manager":
+                        if agent_name not in ("Project_Manager", "Architect"):
                             self.logger.warning(
                                 f"Ignored section add by non-PM agent: {agent_name} section={section}"
+                            )
+                            continue
+
+                        if agent_name == "Architect" and str(section) != "Symbolic API Specifications":
+                            self.logger.warning(
+                                f"Ignored section add by Architect for non-symbolic section: {agent_name} section={section}"
                             )
                             continue
 
@@ -421,9 +427,14 @@ class DocumentManager:
                 section = a.get('section')
                 if section is not None:
                     agent_name = a.get('agent_name', '')
-                    if agent_name != 'Project_Manager':
+                    if agent_name not in ('Project_Manager', 'Architect'):
                         self.logger.warning(
                             f"Ignored section add by non-PM agent: {agent_name} section={section}"
+                        )
+                        continue
+                    if agent_name == 'Architect' and str(section) != 'Symbolic API Specifications':
+                        self.logger.warning(
+                            f"Ignored section add by Architect for non-symbolic section: {agent_name} section={section}"
                         )
                         continue
                     work_doc = self._insert_after_section_end(
@@ -569,7 +580,7 @@ class DocumentManager:
             return doc
 
         occurrences: list[str] = []
-        file_re = re.compile(r"^\*\*File:\*\*\s*`?([^`]+)`?\s*$")
+        file_re = re.compile(r"^(?:[-*]\s*)?\*\*File:\*\*\s*`?([^`]+)`?\s*$")
         current_file: Optional[str] = None
         for ln in body_lines:
             m = file_re.match(ln.strip())
@@ -633,7 +644,7 @@ class DocumentManager:
 
     def _split_symbolic_api_blocks(self, text: str) -> tuple[list[str], list[str], Dict[str, list[str]]]:
         lines = (text or "").replace('\r\n', '\n').replace('\r', '\n').split('\n')
-        file_re = re.compile(r"^\*\*File:\*\*\s*`?([^`]+)`?\s*$")
+        file_re = re.compile(r"^(?:[-*]\s*)?\*\*File:\*\*\s*`?([^`]+)`?\s*$")
 
         preamble: list[str] = []
         ordered_files: list[str] = []
@@ -765,7 +776,7 @@ class DocumentManager:
                 _, patch_order, patch_blocks = self._split_symbolic_api_blocks(candidate_body_text)
                 if patch_blocks:
                     section_lines = lines[body_start_idx:body_end_idx]
-                    file_re = re.compile(r"^\*\*File:\*\*\s*`?([^`]+)`?\s*$")
+                    file_re = re.compile(r"^(?:[-*]\s*)?\*\*File:\*\*\s*`?([^`]+)`?\s*$")
 
                     def find_block_range(file_path: str) -> Optional[tuple[int, int]]:
                         start = None
