@@ -11,7 +11,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 class FileStat:
     path: str
     tokens: int
-    bytes: int
+    lines: int
 
 
 def _is_ignored_path(p: Path) -> bool:
@@ -101,19 +101,10 @@ def _collect_stats(
         if res is None:
             continue
         text, size = res
-        out.append(FileStat(path=str(p), tokens=counter(text), bytes=size))
+        lines = len(text.splitlines())
+        out.append(FileStat(path=str(p), tokens=counter(text), lines=lines))
 
     return out
-
-
-def _format_bytes(n: int) -> str:
-    units = ["B", "KB", "MB", "GB"]
-    v = float(n)
-    for u in units:
-        if v < 1024.0:
-            return f"{v:.2f}{u}" if u != "B" else f"{int(v)}{u}"
-        v /= 1024.0
-    return f"{v:.2f}TB"
 
 
 def main() -> int:
@@ -153,25 +144,25 @@ def main() -> int:
             exclude_exts=exclude_exts,
         )
         total_tokens = sum(s.tokens for s in stats)
-        total_bytes = sum(s.bytes for s in stats)
+        total_lines = sum(s.lines for s in stats)
         results[str(p)] = {
             "files": len(stats),
             "tokens": total_tokens,
-            "bytes": total_bytes,
+            "lines": total_lines,
         }
         all_files.extend(stats)
 
     all_tokens = sum(s.tokens for s in all_files)
-    all_bytes = sum(s.bytes for s in all_files)
+    all_lines = sum(s.lines for s in all_files)
     top = sorted(all_files, key=lambda s: s.tokens, reverse=True)[: max(0, args.top)]
 
     if args.json:
         payload = {
             "method": method,
             "targets": results,
-            "total": {"files": len(all_files), "tokens": all_tokens, "bytes": all_bytes},
+            "total": {"files": len(all_files), "tokens": all_tokens, "lines": all_lines},
             "top": [
-                {"path": s.path, "tokens": s.tokens, "bytes": s.bytes}
+                {"path": s.path, "tokens": s.tokens, "lines": s.lines}
                 for s in top
             ],
         }
@@ -181,13 +172,13 @@ def main() -> int:
     print(f"token_method: {method}")
     for k, v in results.items():
         print(
-            f"- {k}: files={v['files']}, tokens={v['tokens']}, bytes={_format_bytes(int(v['bytes']))}"
+            f"- {k}: files={v['files']}, tokens={v['tokens']}, lines={v['lines']}"
         )
-    print(f"total: files={len(all_files)}, tokens={all_tokens}, bytes={_format_bytes(all_bytes)}")
+    print(f"total: files={len(all_files)}, tokens={all_tokens}, lines={all_lines}")
     if top:
         print("top_files_by_tokens:")
         for s in top:
-            print(f"- {s.tokens}\t{_format_bytes(s.bytes)}\t{s.path}")
+            print(f"- {s.tokens}\t{s.lines}\t{s.path}")
     return 0
 
 

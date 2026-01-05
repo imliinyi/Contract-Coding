@@ -1,1 +1,7 @@
-DAGAgent/config.py
+# Ignore the project's history directory at repo root
+history/
+test/
+.venv/
+
+# Ignore Python bytecode cache directories everywhere
+__pycache__/
