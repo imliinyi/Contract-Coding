@@ -3,11 +3,28 @@ import json
 import time
 from typing import Any, Dict, List
 
-from openai import AzureOpenAI
+from openai import OpenAI
 
 from ContractCoding.utils.log import get_logger
 
 logger = get_logger()
+
+
+def _normalize_openai_base_url(api_base: str) -> str:
+    base = (api_base or "").strip()
+    if not base:
+        return base
+
+    suffixes = [
+        "/chat/completions",
+        "/v1/chat/completions",
+    ]
+    for s in suffixes:
+        if base.endswith(s):
+            base = base[: -len(s)]
+            break
+
+    return base.rstrip("/")
 
 
 def _is_token_limit_error(err: Exception) -> bool:
@@ -28,12 +45,12 @@ def _is_token_limit_error(err: Exception) -> bool:
 
 class LLM(ABC):
     def __init__(self, api_key: str, api_base: str,  deployment_name: str, max_tokens: int = 10240, temperature: float = 0.0):
-        self.client = AzureOpenAI(
+        self.client = OpenAI(
             api_key=api_key,
-            api_version="2024-03-01-preview",
-            base_url=api_base,
+            base_url=_normalize_openai_base_url(api_base),
         )
         self.deployment_name = deployment_name
+        self.model = deployment_name
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.prompt_tokens = 0
@@ -45,12 +62,11 @@ class LLM(ABC):
             retry += 1
             try:
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.model,
                     max_tokens=self.max_tokens,
                     messages=messages,
                     timeout=30,
                     temperature=self.temperature,
-                    extra_headers={"X-TT-LOGID": ""},
                 )
                 break
             except Exception as e:
@@ -87,12 +103,11 @@ class LLM(ABC):
             retry += 1
             try:
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.model,
                     max_tokens=self.max_tokens,
                     messages=messages,
                     timeout=60,
                     temperature=self.temperature,
-                    extra_headers={"X-TT-LOGID": ""},
                 )
                 break
             except Exception as e:
@@ -134,14 +149,13 @@ class LLM(ABC):
 
             try:
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.model,
                     messages=messages,
                     tools=tool_schemas if tool_schemas else None,
                     tool_choice="auto",  
                     timeout=60, 
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
-                    extra_headers={"X-TT-LOGID": ""},
                 )
                 
                 if hasattr(response, 'usage'):

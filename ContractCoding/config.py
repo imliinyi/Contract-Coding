@@ -17,7 +17,7 @@ class Config(BaseModel):
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "Your OpenAI API Key")
     OPENAI_API_BASE_URL: str = os.getenv(
         "OPENAI_API_BASE_URL",
-        "https://api.openai.com/v1/chat/completions",
+        "https://api.openai.com/v1",
     )
     OPENAI_DEPLOYMENT_NAME: str = os.getenv("OPENAI_DEPLOYMENT_NAME", "gpt-4o-2024-11-20")
     OPENAI_API_MAX_TOKENS: int = int(os.getenv("OPENAI_API_MAX_TOKENS", "16384"))
