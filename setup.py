@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="MetaFlow",
+    name="ContractCoding",
     version="0.1.0",
     description="A contract-driven multi-agent collaboration framework",
     packages=find_packages(),
