@@ -1,4 +1,7 @@
-import sympy
+try:
+    import sympy
+except Exception:
+    sympy = None
 
 def solve_math_expression(expression: str, mode: str = 'symbolic') -> str:
     """
@@ -12,6 +15,8 @@ def solve_math_expression(expression: str, mode: str = 'symbolic') -> str:
         return f"Error: Mode '{mode}' is not supported. Only 'symbolic' mode is available."
 
     try:
+        if sympy is None:
+            return "Error: sympy is not installed in the current environment."
         # Use sympify to safely parse the expression
         parsed_expression = sympy.sympify(expression)
         

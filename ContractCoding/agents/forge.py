@@ -17,6 +17,24 @@ class AgentCapability:
         self.FILE = FILE
 
 
+DEFAULT_AGENT_CAPABILITIES = {
+    "Project_Manager": AgentCapability(FILE=True),
+    "Critic": AgentCapability(FILE=True, CODE=True, MATH=True, SEARCH=True),
+    "Code_Reviewer": AgentCapability(FILE=True, CODE=True),
+    "Technical_Writer": AgentCapability(FILE=True, CODE=True, MATH=True, SEARCH=True),
+    "Editing": AgentCapability(FILE=True),
+    "Researcher": AgentCapability(FILE=True, SEARCH=True),
+    "Mathematician": AgentCapability(FILE=True, MATH=True),
+    "Proof_Assistant": AgentCapability(FILE=True, MATH=True),
+    "Data_Scientist": AgentCapability(FILE=True, MATH=True, SEARCH=True),
+    "Frontend_Engineer": AgentCapability(FILE=True, CODE=True),
+    "Backend_Engineer": AgentCapability(FILE=True, CODE=True),
+    "Algorithm_Engineer": AgentCapability(FILE=True, CODE=True),
+    "Test_Engineer": AgentCapability(FILE=True, CODE=True),
+    "Architect": AgentCapability(FILE=True, CODE=True),
+}
+
+
 class AgentForge:
     """
     AgentForge class for creating agents.
@@ -31,8 +49,7 @@ class AgentForge:
         if capability.MATH:
             tools.append(solve_math_expression)
         if capability.SEARCH:
-            # tools.append(search_web)
-            pass
+            tools.append(search_web)
         if capability.FILE:
             tools.extend(build_file_tools(self.config.WORKSPACE_DIR))
 
@@ -57,3 +74,9 @@ class AgentForge:
         )
 
         return agent
+
+    def create_default_agents(self) -> dict[str, LLMAgent]:
+        return {
+            name: self.create_agent(name, capability)
+            for name, capability in DEFAULT_AGENT_CAPABILITIES.items()
+        }

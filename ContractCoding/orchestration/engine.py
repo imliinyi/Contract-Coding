@@ -1,15 +1,14 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from langgraph.graph import END
-
 from ContractCoding.agents.base import BaseAgent
 from ContractCoding.config import Config
-from ContractCoding.orchestration.traverser import GraphTraverser
 from ContractCoding.memory.audit import audit_file_existence, audit_file_versions
 from ContractCoding.memory.document import DocumentManager
 from ContractCoding.memory.processor import MemoryProcessor
+from ContractCoding.orchestration.constants import END
 from ContractCoding.orchestration.runner import AgentRunner
+from ContractCoding.orchestration.traverser import GraphTraverser
 from ContractCoding.utils.log import get_logger
 from ContractCoding.utils.state import GeneralState
 
@@ -23,6 +22,16 @@ class Engine:
         self.is_train = True
         self.termination_policy = config.TERMINATION_POLICY
 
+        self.memory_processor: MemoryProcessor | None = None
+        self.document_manager: DocumentManager | None = None
+        self.agent_runner: AgentRunner | None = None
+        self.graph_traverser: Optional[GraphTraverser] = None
+        self._reset_runtime_state()
+
+        if self.termination_policy not in ['any', 'majority', 'all']:
+            raise ValueError("TERMINATION_PLOICY must be one of ['any', 'majority', 'all'].")
+
+    def _reset_runtime_state(self) -> None:
         self.memory_processor = MemoryProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
         self.document_manager = DocumentManager()
         self.agent_runner = AgentRunner(
@@ -31,15 +40,12 @@ class Engine:
             memory_processor=self.memory_processor,
             document_manager=self.document_manager,
         )
-        self.graph_traverser: Optional[GraphTraverser] = GraphTraverser(
+        self.graph_traverser = GraphTraverser(
             config=self.config,
             agent_runner=self.agent_runner,
             memory_processor=self.memory_processor,
             document_manager=self.document_manager,
         )
-
-        if self.termination_policy not in ['any', 'majority', 'all']:
-            raise ValueError("TERMINATION_PLOICY must be one of ['any', 'majority', 'all'].")
 
     def _initialize_state(self, input: str) -> GeneralState:
         return GeneralState(
@@ -52,8 +58,8 @@ class Engine:
             task_requirements={self.start_agent: input},
         )
 
-    def _run_single_step(self, input: str) -> Tuple[GeneralState, bool]:
-        self.document_manager = DocumentManager()
+    def _run_single_step(self, input: str) -> Tuple[GeneralState | None, bool]:
+        self._reset_runtime_state()
         initial_state = self._initialize_state(input)
 
         _, execution_trace, terminating_states = self.graph_traverser.traverse(self.start_agent, initial_state)
@@ -81,6 +87,8 @@ class Engine:
         self.agents[agent_name] = agent
         if is_start:
             self.start_agent = agent_name
+        if self.memory_processor is not None:
+            self.memory_processor.agents = list(self.agents.keys())
 
     def train(self, inputs: List[str]) -> List[Dict[str, Any]]:
         self.is_train = True
@@ -102,19 +110,18 @@ class Engine:
         self.logger.info("--- Training Finished ---")
         return results
 
-    def run(self, input_task: str) -> str:
+    def run(self, input_task: str) -> GeneralState | None:
         self.is_train = False
         final_state, _ = self._run_single_step(input_task)
 
         if self.document_manager:
-            with open('document.md', 'r', encoding='utf-8') as f:
-                document_content = f.read()
             try:
                 import io
                 import contextlib
 
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
+                    document_content = self.document_manager.get()
                     audit_file_existence(document_content, self.config.WORKSPACE_DIR)
                     audit_file_versions(document_content, self.config.WORKSPACE_DIR)
                 audit_output = buf.getvalue().strip()

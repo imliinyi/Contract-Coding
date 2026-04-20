@@ -45,17 +45,18 @@ class BaseAgent(ABC):
 
     @staticmethod
     def validate_state(state: GeneralState | None) -> bool:
+        logger = get_logger()
         if not state:
-            self.logger.error("State is None")
+            logger.error("State is None")
             return False
         
         try:
             if not state.output:
-                self.logger.error("State output is empty")
+                logger.error("State output is empty")
                 return False
             return True
         except Exception as e:
-            self.logger.error(f"Error validating state: {e}")
+            logger.error(f"Error validating state: {e}")
             return False
 
     @staticmethod

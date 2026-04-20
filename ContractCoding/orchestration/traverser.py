@@ -48,8 +48,9 @@ class GraphTraverser:
                 pass
 
             layer_executed_agents = []
+            layer_output_states: Dict[str, List[GeneralState]] = defaultdict(list)
 
-            def _run_single(agent_name: str, state: GeneralState) -> None:
+            def _run_single(agent_name: str, state: GeneralState) -> GeneralState:
                 next_available_agents = self.agent_runner.agents
                 print(f"--- Current Agent: {agent_name} ---")
                 self.logger.info(f"--- Current Agent: {agent_name} | Sub Task: {state.sub_task} ---")
@@ -60,21 +61,24 @@ class GraphTraverser:
                 )
                 self.memory_processor.add_message(agent_name, output_state)
                 execution_trace.append((agent_name, "NEXT_LAYER"))
+                return output_state
 
             max_workers = getattr(self.config, "MAX_WORKERS", 16)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {}
                 for agent_name, states in current_level_agents.items():
                     for state in states:
-                        futures[executor.submit(_run_single, agent_name, state)] = agent_name
+                        futures[executor.submit(_run_single, agent_name, state)] = (agent_name, state)
 
                 for future in as_completed(futures):
-                    agent_name = futures[future]
+                    agent_name, fallback_state = futures[future]
                     layer_executed_agents.append(agent_name)
                     try:
-                        future.result()
+                        output_state = future.result()
+                        layer_output_states[agent_name].append(output_state)
                     except Exception as e:
                         self.logger.error(f"Agent {agent_name} failed with error: {e}")
+                        layer_output_states[agent_name].append(fallback_state)
 
             try:
                 self.document_manager.commit_layer_aggregation()
@@ -130,14 +134,15 @@ class GraphTraverser:
                 pending_tasks = [t for t in self._parse_contract(doc_content) if t['status'] != 'VERIFIED']
 
                 if not pending_tasks:
-                    for states in current_level_agents.values():
+                    terminal_source = layer_output_states or current_level_agents
+                    for states in terminal_source.values():
                         terminating_states.extend(states)
                     break
                 else:
                     in_progress_tasks = [t for t in pending_tasks if t['status'] == 'IN_PROGRESS']
 
                     if in_progress_tasks and not next_level_agents_map:
-                        base_state = list(current_level_agents.values())[0][0]
+                        base_state = self._select_base_state(layer_output_states, current_level_agents)
                         for task in in_progress_tasks:
                             owner = task['owner']
                             file_path = task['file']
@@ -149,7 +154,7 @@ class GraphTraverser:
 
                     if not next_level_agents_map:
                         pm_msg = "Critical: The workflow has stalled. There are pending tasks but no agents were scheduled. Please review the 'Symbolic API Specifications' in the document. Ensure all files have valid Status (TODO, IN_PROGRESS, DONE, VERIFIED) and Owners."
-                        base_state = list(current_level_agents.values())[0][0]
+                        base_state = self._select_base_state(layer_output_states, current_level_agents)
                         new_state = base_state.model_copy()
                         new_state.sub_task = pm_msg
                         next_level_agents_map["Project_Manager"].append(new_state)
@@ -161,98 +166,28 @@ class GraphTraverser:
 
         return all_layers, execution_trace, terminating_states
 
+    def _select_base_state(
+        self,
+        output_states: Dict[str, List[GeneralState]],
+        fallback_states: Dict[str, List[GeneralState]],
+    ) -> GeneralState:
+        for states in output_states.values():
+            if states:
+                return states[0]
+        for states in fallback_states.values():
+            if states:
+                return states[0]
+        return GeneralState()
+
     def _validate_project_structure(self, content: str) -> Tuple[bool, List[str]]:
-        validation_errors = []
-
-        missing_specs = check_missing_specs(content)
-        if missing_specs:
-            validation_errors.extend(
-                [
-                    f"File defined in Project Structure but missing from Sub-Tasks (Symbolic API Specifications): {f}"
-                    for f in missing_specs
-                ]
-            )
-
-        parsed_tasks = self._parse_contract(content)
-        for t in parsed_tasks:
-            file_path = t.get('file', 'Unknown')
-            if t.get('owner', 'Unknown') == 'Unknown':
-                validation_errors.append(f"Task for {file_path} missing 'Owner' field.")
-
-            status = t.get('status', 'TODO')
-            if status not in ['TODO', 'IN_PROGRESS', 'ERROR', 'DONE', 'VERIFIED']:
-                validation_errors.append(f"Task for {file_path} has invalid Status: {status}")
-
+        validation_errors = self.document_manager.validate_contract_structure()
         if validation_errors:
             return False, validation_errors
 
         return True, []
 
     def _parse_contract(self, content: str) -> List[Dict[str, str]]:
-        tasks = []
-        lines = content.split('\n')
-        current_task: Dict[str, str] = {}
-        current_block_lines: List[str] = []
-
-        def _finalize_current_task():
-            nonlocal current_task, current_block_lines
-            if not (current_task and 'file' in current_task):
-                current_task = {}
-                current_block_lines = []
-                return
-            if 'owner' not in current_task:
-                current_task['owner'] = 'Unknown'
-            if 'status' not in current_task:
-                current_task['status'] = 'TODO'
-            current_task['block'] = "\n".join(current_block_lines).strip("\n")
-            tasks.append(current_task)
-            current_task = {}
-            current_block_lines = []
-
-        for line in lines:
-            line = line.strip()
-
-            file_match = re.search(r"\*\*File:\*\*\s*`?([^`]+)`?", line)
-            header_match = re.match(r"^####\s+`?([\w./-]+)`?", line)
-            paths_match = re.search(r"\*\*Paths\*\*:\s*`?([^`]+)`?", line)
-            path_match = re.search(r"\*\*Path\*\*:\s*`?([^`]+)`?", line)
-
-            new_file_path = None
-            if file_match:
-                new_file_path = file_match.group(1).strip()
-            elif header_match:
-                new_file_path = header_match.group(1).strip()
-            elif paths_match:
-                new_file_path = paths_match.group(1).strip()
-            elif path_match:
-                new_file_path = path_match.group(1).strip()
-
-            if new_file_path:
-                _finalize_current_task()
-                current_task = {'file': new_file_path}
-                current_block_lines = [f"**File:** `{new_file_path}`"]
-                continue
-
-            if current_task:
-                current_block_lines.append(line)
-
-            owner_match = re.search(r"\*\*Owner(?::)?\*\* [:]?\s*(.+)", line)
-            if owner_match and current_task:
-                owner_clean = owner_match.group(1).strip().lstrip(':').strip()
-                owner_clean = owner_clean.replace(" ", "_")
-                current_task['owner'] = owner_clean
-
-            status_match = re.search(r"\*\*Status(?::)?\*\* [:]?\s*(.+)", line)
-            if status_match and current_task:
-                raw_status = status_match.group(1).strip().lstrip(':').strip()
-                if "TBD" in raw_status.upper() or not raw_status:
-                    current_task['status'] = "TODO"
-                else:
-                    current_task['status'] = raw_status
-
-        _finalize_current_task()
-
-        return tasks
+        return self.document_manager.get_tasks()
 
     def _extract_issues_from_task(self, task: Dict[str, str]) -> str:
         block = task.get('block', '') or ''

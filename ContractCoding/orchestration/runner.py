@@ -1,11 +1,11 @@
 from typing import Dict
 
-from langgraph.constants import END
-
 from ContractCoding.agents.base import BaseAgent
 from ContractCoding.config import Config
 from ContractCoding.memory.document import DocumentManager
 from ContractCoding.memory.processor import MemoryProcessor
+from ContractCoding.orchestration.constants import END
+from ContractCoding.orchestration.harness import TaskHarness
 from ContractCoding.utils.log import get_logger
 from ContractCoding.utils.state import GeneralState
 
@@ -23,6 +23,7 @@ class AgentRunner:
         self.agents = agents
         self.memory_processor = memory_processor
         self.document_manager = document_manager
+        self.harness = TaskHarness(config=config, document_manager=document_manager)
 
     def run(
         self,
@@ -37,14 +38,15 @@ class AgentRunner:
             state.next_agents = [END]
             return state
 
-        output_state = agent._execute_agent(
+        result = self.harness.execute(
+            agent=agent,
+            agent_name=agent_name,
             state=state,
             next_available_agents=next_available_agents,
-            document_manager=self.document_manager,
             memory_processor=self.memory_processor,
         )
 
-        return output_state
+        return result.output_state
 
 
 AgentExecutor = AgentRunner

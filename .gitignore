@@ -2,6 +2,8 @@
 history/
 test/
 .venv/
+agent.log
+document.md
 
 # Ignore Python bytecode cache directories everywhere
 __pycache__/

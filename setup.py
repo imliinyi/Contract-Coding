@@ -11,6 +11,8 @@ setup(
         "pydantic",
         "openai",
         "httpx",
+        "duckduckgo_search",
+        "sympy",
     ],
     python_requires=">=3.9",
 )

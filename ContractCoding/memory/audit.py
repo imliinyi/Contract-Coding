@@ -1,8 +1,11 @@
 import re
 import os
 
+from ContractCoding.tools.artifacts import ArtifactMetadataStore
+
 # --- Helpers to extract file paths purely from backticks ---
 _ALLOWED_EXTS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.html', '.css'}
+_EXT_PATTERN = "|".join(sorted((re.escape(ext) for ext in _ALLOWED_EXTS), key=len, reverse=True))
 
 def _strip_code_fences(text: str) -> str:
     """
@@ -176,19 +179,25 @@ def get_spec_files(document_content: str) -> set[str]:
     # Always also scan the entire document to avoid missing unconventional placements
     search_scopes.append(document_content)
 
-    # Patterns (robust to bold markup and colon placement). Python files only (.py)
+    # Patterns (robust to bold markup and colon placement).
     # Matches: **File:** `path.py`  OR  **File**: path.py  OR  File: path.py
     # Also supports **Path:** which is sometimes used in documents.
-    file_token_pat = re.compile(r"(?i)(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)" )
+    file_token_pat = re.compile(
+        rf"(?i)(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+(?:{_EXT_PATTERN}))"
+    )
     
     # Matches list form: - **File:** path.py
-    list_file_token_pat = re.compile(r"(?i)-\s*(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+\.py)")
+    list_file_token_pat = re.compile(
+        rf"(?i)-\s*(?:\*\*\s*(?:File|Path)\s*:?-?\s*\*\*|\b(?:File|Path)\b)\s*:?-?\s*`?([A-Za-z0-9_./\\-]+(?:{_EXT_PATTERN}))"
+    )
     
     # Matches status bullets: - **path.py**: DONE
-    status_bullet_pat = re.compile(r"(?i)-\s*\*\*([^*\n]+?\.py)\*\*\s*:\s*(DONE|TODO|IN_PROGRESS|ERROR)")
+    status_bullet_pat = re.compile(
+        rf"(?i)-\s*\*\*([^*\n]+?(?:{_EXT_PATTERN}))\*\*\s*:\s*(DONE|TODO|IN_PROGRESS|ERROR)"
+    )
     
     # Matches Header form: #### path.py
-    header_pat = re.compile(r"^####\s*`?([A-Za-z0-9_./\\-]+\.py)", re.MULTILINE)
+    header_pat = re.compile(rf"^####\s*`?([A-Za-z0-9_./\\-]+(?:{_EXT_PATTERN}))", re.MULTILINE)
 
     for scope in search_scopes:
         if not scope:
@@ -291,13 +300,16 @@ def audit_file_versions(document_content, workspace_path):
         try:
             with open(resolved, 'r', encoding='utf-8') as f:
                 first = f.readline().strip()
+                metadata_version = metadata_store.get_version(resolved)
                 mm = re.match(r"#\s*version:\s*(\d+)", first, re.IGNORECASE)
-                if mm:
+                if metadata_version is not None:
+                    file_ver = metadata_version
+                elif mm:
                     file_ver = int(mm.group(1))
-                    if file_ver != doc_ver:
-                        version_mismatches.append((p, file_ver, doc_ver))
                 else:
-                    version_mismatches.append((p, "N/A", doc_ver))
+                    file_ver = "N/A"
+                if file_ver != doc_ver:
+                    version_mismatches.append((p, file_ver, doc_ver))
         except Exception:
             version_mismatches.append((p, "read_error", doc_ver))
 
@@ -418,3 +430,4 @@ def check_missing_files(document_content: str, workspace_path: str) -> list[str]
             missing.append(p)
             
     return sorted(missing)
+    metadata_store = ArtifactMetadataStore(workspace_path)

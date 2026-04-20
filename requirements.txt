@@ -3,3 +3,5 @@ langgraph
 pydantic
 openai
 httpx
+duckduckgo_search
+sympy

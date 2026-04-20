@@ -1,14 +1,16 @@
 import ast
 import codecs
 import os
-import re
 from typing import Callable, List
+
+from ContractCoding.tools.artifacts import ArtifactMetadataStore
 
 
 class WorkspaceFS:
     def __init__(self, workspace_dir: str):
         self.workspace_dir = os.path.abspath(workspace_dir)
         os.makedirs(self.workspace_dir, exist_ok=True)
+        self.metadata_store = ArtifactMetadataStore(self.workspace_dir)
 
     def _normalize_path(self, path: str) -> str:
         if not path:
@@ -124,22 +126,12 @@ class WorkspaceFS:
             if ".md" in path:
                 return "Error: Don't write markdown files directly. Use a code editor instead."
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
-
-            version = 1
-            if os.path.exists(full_path):
-                with open(full_path, "r", encoding="utf-8") as f:
-                    first_line = f.readline()
-                    match = re.match(r"# version: (\d+)", first_line)
-                    if match:
-                        version = int(match.group(1)) + 1
-
-            version_comment = f"# version: {version}\n"
-            content = version_comment + (content or "")
             content = content.replace('"', '\\"')
             content = codecs.decode(content, "unicode_escape")
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return f"File successfully written to {path}"
+            version = self.metadata_store.bump_version(full_path)
+            return f"File successfully written to {path} (artifact version {version})"
         except Exception as e:
             return f"An error occurred while writing to the file: {str(e)}"
 
@@ -180,7 +172,11 @@ class WorkspaceFS:
             with open(full_path, "w", encoding="utf-8") as f:
                 f.writelines(new_file_content)
 
-            return f"Successfully updated lines {start_line} through {end_line} in file '{file_path}'."
+            version = self.metadata_store.bump_version(full_path)
+            return (
+                f"Successfully updated lines {start_line} through {end_line} in file '{file_path}' "
+                f"(artifact version {version})."
+            )
         except ValueError as e:
             return str(e)
         except Exception as e:
@@ -211,7 +207,11 @@ class WorkspaceFS:
             with open(full_path, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
 
-            return f"Successfully inserted content into '{path}' at line {target_idx + 1}."
+            version = self.metadata_store.bump_version(full_path)
+            return (
+                f"Successfully inserted content into '{path}' at line {target_idx + 1} "
+                f"(artifact version {version})."
+            )
         except ValueError as e:
             return str(e)
         except Exception as e:

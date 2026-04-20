@@ -1,5 +1,9 @@
 import json
-from duckduckgo_search import DDGS
+
+try:
+    from duckduckgo_search import DDGS
+except Exception:
+    DDGS = None
 
 from ContractCoding.utils.log import get_logger
 
@@ -14,6 +18,8 @@ def search_web(query: str) -> str:
     :return: A JSON string representing a list of dictionaries, where each dictionary contains the 'title', 'link', and 'snippet' of a search result.
     """
     try:
+        if DDGS is None:
+            return json.dumps({"error": "duckduckgo_search is not installed in the current environment."})
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
             logger.info(f"Search results for query '{query}': {results}")

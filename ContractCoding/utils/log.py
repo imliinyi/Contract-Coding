@@ -24,6 +24,10 @@ def get_logger(log_path: str = "./agent.log", name: str = "MetaFlow"):
                     return logger
         for h in list(logger.handlers):
             logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
 
     logger.setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
