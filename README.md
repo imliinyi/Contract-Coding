@@ -76,3 +76,8 @@ Run the engine with a task:
 ```bash
 python main.py --task "Write a Gomoku program with AI that allows players to play against AI"
 ```
+
+## Architecture Docs
+
+- [Current Architecture](docs/current-architecture.md)
+- [vNext Execution Plane Design](docs/vnext-execution-plane.md)

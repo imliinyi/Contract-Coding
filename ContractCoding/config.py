@@ -9,6 +9,10 @@ class Config(BaseModel):
     TERMINATION_POLICY: str = "all"
     SPEC_GATING_ENABLED: bool = False
     WORKSPACE_DIR: str = os.getenv("WORKSPACE_DIR", "workspace")
+    EXECUTION_PLANE: str = os.getenv("EXECUTION_PLANE", "workspace")
+    EXECUTION_ROOT: str = os.getenv("EXECUTION_ROOT", "")
+    KEEP_EXECUTION_PLANES: bool = os.getenv("KEEP_EXECUTION_PLANES", "false").lower() == "true"
+    FALLBACK_TO_SANDBOX: bool = os.getenv("FALLBACK_TO_SANDBOX", "true").lower() == "true"
     MEMORY_WINDOW: int = 5
     MAX_LAYERS: int = 20
     MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "16"))

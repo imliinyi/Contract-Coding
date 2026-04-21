@@ -3,6 +3,7 @@ import codecs
 import os
 from typing import Callable, List
 
+from ContractCoding.orchestration.workspace_context import get_current_workspace
 from ContractCoding.tools.artifacts import ArtifactMetadataStore
 
 
@@ -275,10 +276,11 @@ class WorkspaceFS:
 
 
 def build_file_tools(workspace_dir: str) -> List[Callable]:
-    fs = WorkspaceFS(workspace_dir)
+    def get_fs() -> WorkspaceFS:
+        return WorkspaceFS(get_current_workspace(workspace_dir))
 
     def file_tree(path: str, max_depth: int = 3) -> str:
-        return fs.file_tree(path, max_depth=max_depth)
+        return get_fs().file_tree(path, max_depth=max_depth)
 
     file_tree.openai_schema = {
         "type": "function",
@@ -297,7 +299,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def read_lines(path: str, start_line: int, end_line: int):
-        return fs.read_lines(path, start_line, end_line)
+        return get_fs().read_lines(path, start_line, end_line)
 
     read_lines.openai_schema = {
         "type": "function",
@@ -317,7 +319,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def read_file(path: str) -> str:
-        return fs.read_file(path)
+        return get_fs().read_file(path)
 
     read_file.openai_schema = {
         "type": "function",
@@ -329,7 +331,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def write_file(path: str, content: str) -> str:
-        return fs.write_file(path, content)
+        return get_fs().write_file(path, content)
 
     write_file.openai_schema = {
         "type": "function",
@@ -348,7 +350,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def list_directory(path: str):
-        return fs.list_directory(path)
+        return get_fs().list_directory(path)
 
     list_directory.openai_schema = {
         "type": "function",
@@ -360,7 +362,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def update_file_lines(file_path: str, start_line: int, end_line: int, new_content: str) -> str:
-        return fs.update_file_lines(file_path, start_line, end_line, new_content)
+        return get_fs().update_file_lines(file_path, start_line, end_line, new_content)
 
     update_file_lines.openai_schema = {
         "type": "function",
@@ -381,7 +383,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def add_code(path: str, line: int, content: str) -> str:
-        return fs.add_code(path, line, content)
+        return get_fs().add_code(path, line, content)
 
     add_code.openai_schema = {
         "type": "function",
@@ -401,7 +403,7 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
     }
 
     def code_outline(file_path: str) -> str:
-        return fs.code_outline(file_path)
+        return get_fs().code_outline(file_path)
 
     code_outline.openai_schema = {
         "type": "function",

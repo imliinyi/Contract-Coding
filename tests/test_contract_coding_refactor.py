@@ -8,8 +8,10 @@ from ContractCoding.config import Config
 from ContractCoding.memory.document import DocumentManager
 from ContractCoding.memory.processor import MemoryProcessor
 from ContractCoding.orchestration.harness import TaskHarness
+from ContractCoding.orchestration.workspace_context import get_current_workspace, workspace_scope
 from ContractCoding.orchestration.traverser import GraphTraverser
 from ContractCoding.tools.artifacts import ArtifactMetadataStore
+from ContractCoding.tools.file_tool import build_file_tools
 from ContractCoding.tools.file_tool import WorkspaceFS
 from ContractCoding.utils.state import GeneralState
 import main as contract_main
@@ -98,7 +100,7 @@ class DummyImplementationAgent:
         self.workspace_dir = workspace_dir
 
     def _execute_agent(self, state, next_available_agents, document_manager, memory_processor):
-        target = os.path.join(self.workspace_dir, "app.py")
+        target = os.path.join(get_current_workspace(self.workspace_dir), "app.py")
         with open(target, "w", encoding="utf-8") as handle:
             handle.write("def run():\n    pass\n")
         return GeneralState(
@@ -112,7 +114,56 @@ class DummyImplementationAgent:
         )
 
 
+class SuccessfulImplementationAgent:
+    def __init__(self, workspace_dir: str):
+        self.workspace_dir = workspace_dir
+
+    def _execute_agent(self, state, next_available_agents, document_manager, memory_processor):
+        runtime_workspace = get_current_workspace(self.workspace_dir)
+        target = os.path.join(runtime_workspace, "app.py")
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write("def run():\n    return 'ok'\n")
+
+        document_manager.execute_actions(
+            [
+                {
+                    "type": "update",
+                    "agent_name": "Backend_Engineer",
+                    "content": {
+                        "Symbolic API Specifications": (
+                            "**File:** `app.py`\n"
+                            "*   **Class:** `App`\n"
+                            "*   **Owner:** Backend_Engineer\n"
+                            "*   **Version:** 2\n"
+                            "*   **Status:** DONE"
+                        )
+                    },
+                }
+            ]
+        )
+
+        return GeneralState(
+            task=state.task,
+            sub_task=state.sub_task,
+            role="Backend_Engineer",
+            thinking="wrote valid file",
+            output="done",
+            next_agents=[],
+            task_requirements={},
+        )
+
+
 class ContractCodingRefactorTests(unittest.TestCase):
+    def test_file_tools_follow_runtime_workspace_scope(self):
+        with tempfile.TemporaryDirectory() as base_dir, tempfile.TemporaryDirectory() as isolated_dir:
+            tools = {tool.__name__: tool for tool in build_file_tools(base_dir)}
+            with workspace_scope(isolated_dir):
+                result = tools["write_file"]("demo.txt", "hello")
+
+            self.assertIn("artifact version 1", result)
+            self.assertFalse(os.path.exists(os.path.join(base_dir, "demo.txt")))
+            self.assertTrue(os.path.exists(os.path.join(isolated_dir, "demo.txt")))
+
     def test_workspace_write_file_uses_sidecar_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             fs = WorkspaceFS(tmpdir)
@@ -296,6 +347,41 @@ class ContractCodingRefactorTests(unittest.TestCase):
             self.assertIsNotNone(task)
             self.assertEqual(task.status, "ERROR")
             self.assertIn("pass", task.render())
+
+    def test_task_harness_sandbox_promotes_successful_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(
+                WORKSPACE_DIR=tmpdir,
+                LOG_PATH=os.path.join(tmpdir, "agent.log"),
+                EXECUTION_PLANE="sandbox",
+            )
+            manager = DocumentManager()
+            manager.execute_actions(
+                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
+            )
+
+            harness = TaskHarness(config, manager)
+            result = harness.execute(
+                agent=SuccessfulImplementationAgent(tmpdir),
+                agent_name="Backend_Engineer",
+                state=GeneralState(
+                    task="demo",
+                    sub_task="Implement/Fix app.py. Current Status: TODO.",
+                    role="user",
+                    thinking="",
+                    output="",
+                ),
+                next_available_agents=[],
+                memory_processor=None,
+            )
+
+            self.assertEqual(result.validation_errors, [])
+            with open(os.path.join(tmpdir, "app.py"), "r", encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertIn("return 'ok'", content)
+            task = manager.get_task("app.py")
+            self.assertIsNotNone(task)
+            self.assertEqual(task.status, "DONE")
 
     def test_document_manager_compiles_module_team_plans(self):
         manager = DocumentManager()

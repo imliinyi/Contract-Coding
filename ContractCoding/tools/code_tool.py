@@ -2,12 +2,14 @@ import subprocess
 import sys
 from typing import Callable
 
+from ContractCoding.orchestration.workspace_context import get_current_workspace
 from ContractCoding.tools.file_tool import WorkspaceFS
 
 
 def build_run_code(workspace_dir: str) -> Callable:
-    fs = WorkspaceFS(workspace_dir)
-    workspace_path = fs.resolve('.')
+    def get_workspace_path() -> str:
+        fs = WorkspaceFS(get_current_workspace(workspace_dir))
+        return fs.resolve('.')
 
     def run_code(code: str, language: str = 'python') -> str:
         if language.lower() not in ['python', 'bash', 'sh']:
@@ -16,6 +18,7 @@ def build_run_code(workspace_dir: str) -> Callable:
             )
 
         try:
+            workspace_path = get_workspace_path()
             if language.lower() == 'python':
                 process = subprocess.run(
                     [sys.executable, '-c', code],

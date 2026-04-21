@@ -9,6 +9,8 @@ from typing import Iterable, List, Optional, Set
 
 from ContractCoding.config import Config
 from ContractCoding.memory.document import DocumentManager
+from ContractCoding.orchestration.execution_plane import ExecutionPlaneManager
+from ContractCoding.orchestration.workspace_context import workspace_scope
 from ContractCoding.utils.log import get_logger
 from ContractCoding.utils.state import GeneralState
 
@@ -44,6 +46,7 @@ class TaskHarness:
         self.config = config
         self.document_manager = document_manager
         self.workspace_dir = os.path.abspath(config.WORKSPACE_DIR)
+        self.execution_plane_manager = ExecutionPlaneManager(config)
         self.logger = get_logger(config.LOG_PATH)
 
     def build_spec(self, agent_name: str, state: GeneralState) -> TaskSpec:
@@ -99,15 +102,15 @@ class TaskHarness:
             owned_files=owned_files,
         )
 
-    def _snapshot(self) -> dict[str, int]:
+    def _snapshot(self, workspace_dir: str) -> dict[str, int]:
         snapshot: dict[str, int] = {}
-        if not os.path.isdir(self.workspace_dir):
+        if not os.path.isdir(workspace_dir):
             return snapshot
-        for root, dirs, files in os.walk(self.workspace_dir):
+        for root, dirs, files in os.walk(workspace_dir):
             dirs[:] = [name for name in dirs if name not in {".git", "__pycache__"}]
             for file_name in files:
                 abs_path = os.path.join(root, file_name)
-                rel_path = os.path.relpath(abs_path, self.workspace_dir)
+                rel_path = os.path.relpath(abs_path, workspace_dir)
                 try:
                     snapshot[rel_path] = os.stat(abs_path).st_mtime_ns
                 except OSError:
@@ -134,22 +137,22 @@ class TaskHarness:
             violations.append(f"Unexpected file modification outside owned scope: {rel_path}")
         return violations
 
-    def _validate_target_file(self, spec: TaskSpec) -> List[str]:
+    def _validate_target_file(self, spec: TaskSpec, workspace_dir: str) -> List[str]:
         if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_files:
             return []
         missing = []
         for target_file in sorted(spec.target_files):
-            abs_target = os.path.join(self.workspace_dir, target_file)
+            abs_target = os.path.join(workspace_dir, target_file)
             if not os.path.exists(abs_target):
                 missing.append(f"Required target file was not created or updated: {target_file}")
         return missing
 
-    def _validate_placeholders(self, spec: TaskSpec) -> List[str]:
+    def _validate_placeholders(self, spec: TaskSpec, workspace_dir: str) -> List[str]:
         if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_files:
             return []
         problems = []
         for target_file in sorted(spec.target_files):
-            abs_target = os.path.join(self.workspace_dir, target_file)
+            abs_target = os.path.join(workspace_dir, target_file)
             if not os.path.exists(abs_target):
                 continue
 
@@ -193,33 +196,50 @@ class TaskHarness:
 
     def execute(self, agent, agent_name: str, state: GeneralState, next_available_agents: list, memory_processor) -> TaskResult:
         spec = self.build_spec(agent_name, state)
-        before_snapshot = self._snapshot()
-        output_state = agent._execute_agent(
-            state=state,
-            next_available_agents=next_available_agents,
-            document_manager=self.document_manager,
-            memory_processor=memory_processor,
+        plane = self.execution_plane_manager.acquire(
+            module_name=spec.target_module or spec.primary_target or "root",
+            isolated=agent_name in IMPLEMENTATION_ROLES,
         )
-        after_snapshot = self._snapshot()
-        changed_files = self._diff_snapshots(before_snapshot, after_snapshot)
+        try:
+            before_snapshot = self._snapshot(plane.working_dir)
+            with workspace_scope(plane.working_dir):
+                output_state = agent._execute_agent(
+                    state=state,
+                    next_available_agents=next_available_agents,
+                    document_manager=self.document_manager,
+                    memory_processor=memory_processor,
+                )
+            after_snapshot = self._snapshot(plane.working_dir)
+            changed_files = self._diff_snapshots(before_snapshot, after_snapshot)
 
-        validation_errors = []
-        validation_errors.extend(self._validate_target_file(spec))
-        validation_errors.extend(self._validate_changed_scope(spec, changed_files))
-        validation_errors.extend(self._validate_placeholders(spec))
-        validation_errors.extend(self._validate_status_update(spec))
+            validation_errors = []
+            validation_errors.extend(self._validate_target_file(spec, plane.working_dir))
+            validation_errors.extend(self._validate_changed_scope(spec, changed_files))
+            validation_errors.extend(self._validate_placeholders(spec, plane.working_dir))
+            validation_errors.extend(self._validate_status_update(spec))
 
-        if validation_errors:
-            self.logger.warning(
-                "Harness validation failed for %s on %s: %s",
-                agent_name,
-                sorted(spec.target_files),
-                validation_errors,
+            if validation_errors:
+                self.logger.warning(
+                    "Harness validation failed for %s on %s: %s",
+                    agent_name,
+                    sorted(spec.target_files),
+                    validation_errors,
+                )
+                self._record_validation_errors(spec, validation_errors)
+            else:
+                promoted = self.execution_plane_manager.promote(plane, changed_files)
+                if plane.isolated:
+                    self.logger.info(
+                        "Promoted execution plane %s for module %s into workspace: %s",
+                        plane.mode,
+                        plane.module_name,
+                        sorted(promoted),
+                    )
+
+            return TaskResult(
+                output_state=output_state,
+                changed_files=changed_files,
+                validation_errors=validation_errors,
             )
-            self._record_validation_errors(spec, validation_errors)
-
-        return TaskResult(
-            output_state=output_state,
-            changed_files=changed_files,
-            validation_errors=validation_errors,
-        )
+        finally:
+            self.execution_plane_manager.cleanup(plane)
