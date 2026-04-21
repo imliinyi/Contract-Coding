@@ -236,6 +236,75 @@ class GraphTraverser:
 
         return "\n".join(out).strip()
 
+    def _format_bullets(self, values: List[str], empty_value: str = "- None") -> str:
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if not cleaned:
+            return empty_value
+        return "\n".join(f"- {value}" for value in cleaned)
+
+    def _build_module_owner_packet(
+        self,
+        module_name: str,
+        owner: str,
+        tasks: List[Dict[str, object]],
+    ) -> str:
+        ordered_tasks = sorted(tasks, key=lambda task: str(task.get("file", "")))
+        target_files = [str(task.get("file", "")).strip() for task in ordered_tasks if task.get("file")]
+        per_file_packets: List[str] = []
+
+        for task in ordered_tasks:
+            file_path = str(task.get("file", "Unknown"))
+            contract_desc = self._extract_contract_description_from_task(task)
+            issue_text = self._extract_issues_from_task(task)
+            depends_on = [str(value).strip() for value in task.get("depends_on", []) if str(value).strip()]
+            packet_lines = [
+                f"File: {file_path}",
+                "Depends on:",
+                self._format_bullets(depends_on),
+                "Contract summary:",
+                contract_desc or "- No additional contract details beyond the file block metadata.",
+            ]
+            if issue_text:
+                packet_lines.extend(
+                    [
+                        "Existing issues to resolve:",
+                        issue_text,
+                    ]
+                )
+            per_file_packets.append("\n".join(packet_lines))
+        packets_body = "\n\n---\n\n".join(per_file_packets)
+
+        return (
+            f"Module team: {module_name}\n"
+            f"Owner packet: {owner}\n"
+            "Implement/Fix the ready files in this module wave.\n"
+            "Target files in this module wave:\n"
+            f"{self._format_bullets(target_files)}\n\n"
+            "Limit implementation to the listed files for this module wave unless a minimal contract repair is required.\n"
+            "All declared dependencies for these files are already satisfied for the current wave.\n\n"
+            "Per-file packets:\n"
+            f"{packets_body}\n\n"
+            "After implementation, update each listed file block status to DONE via <document_action>."
+        )
+
+    def _build_module_review_packet(
+        self,
+        module_name: str,
+        review_tasks: List[Dict[str, object]],
+        module_dependencies: List[str],
+    ) -> str:
+        files = [str(task.get("file", "")).strip() for task in review_tasks if task.get("file")]
+        return (
+            f"Module team: {module_name}\n"
+            "Review this completed module wave.\n"
+            "Files to review:\n"
+            f"{self._format_bullets(files)}\n\n"
+            "Resolved module dependencies:\n"
+            f"{self._format_bullets(module_dependencies)}\n\n"
+            "For EACH file, read the implementation, compare it against the contract, and update the same file block.\n"
+            "If correct: set Status to VERIFIED. If incorrect: set Status to ERROR and append actionable issue bullets after the Status line."
+        )
+
     def _schedule_from_contract(
         self, doc_content: str, current_layer_agents: Dict[str, List[GeneralState]]
     ) -> Dict[str, List[GeneralState]]:
@@ -283,66 +352,61 @@ class GraphTraverser:
             next_agents_map["Project_Manager"].append(new_state)
             return next_agents_map
 
-        done_tasks: List[Dict[str, str]] = []
+        module_plans = self.document_manager.get_module_plans()
+        blocked_tasks: List[Dict[str, object]] = []
 
-        for task in tasks:
-            file_path = task['file']
-            owner = task['owner']
-            status = task['status']
+        for plan in module_plans:
+            ready_by_owner: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+            for task in plan.ready_tasks:
+                owner = str(task.get("owner", "Unknown"))
+                if owner == "Unknown":
+                    continue
+                ready_by_owner[owner].append(task)
 
-            if owner == "Unknown":
-                continue
-
-            if status in ['TODO', 'IN_PROGRESS', 'ERROR']:
-                issue_text = ""
-                if status == 'ERROR':
-                    issue_text = self._extract_issues_from_task(task)
-
-                contract_desc = self._extract_contract_description_from_task(task)
-
-                if issue_text:
-                    msg = (
-                        f"Fix {file_path}. Current Status: {status}. Follow the contract strictly.\n\n"
-                        "File contract summary (from Symbolic API Specifications):\n"
-                        f"{contract_desc}\n\n"
-                        "Contract issues to resolve (from the file block):\n"
-                        f"{issue_text}\n\n"
-                        "After fixes, update the same file block status to DONE via <document_action>."
-                    )
-                else:
-                    msg = (
-                        f"Implement/Fix {file_path}. Current Status: {status}. Follow the contract strictly.\n\n"
-                        "File contract summary (from Symbolic API Specifications):\n"
-                        f"{contract_desc}\n\n"
-                        "After implementation, update the same file block status to DONE via <document_action>."
-                    )
+            for owner, owner_tasks in ready_by_owner.items():
+                msg = self._build_module_owner_packet(plan.name, owner, owner_tasks)
                 new_state = base_state.model_copy()
                 new_state.sub_task = msg
                 next_agents_map[owner].append(new_state)
 
-            elif status == 'DONE':
-                done_tasks.append(task)
+            if not plan.ready_tasks and plan.review_tasks:
+                review_msg = self._build_module_review_packet(
+                    module_name=plan.name,
+                    review_tasks=plan.review_tasks,
+                    module_dependencies=plan.module_dependencies,
+                )
 
-        if done_tasks:
-            files = [t.get('file', 'Unknown') for t in done_tasks if t.get('file')]
-            files = [f for f in files if f != 'Unknown']
-            file_list = "\n".join([f"- {f}" for f in files])
-            review_msg = (
-                "Batch review the following completed tasks (Status: DONE). "
-                "For EACH file, read the implementation, compare against the contract, and then update the document status. "
-                "If correct: set Status to VERIFIED. If incorrect: set Status to ERROR and delegate fixes with clear instructions. "
-                "You MUST use the `document_action` tool to update statuses (do not only describe in text).\n\n"
-                "Files to review:\n"
-                f"{file_list}"
+                critic_state = base_state.model_copy()
+                critic_state.sub_task = review_msg
+                next_agents_map["Critic"].append(critic_state)
+
+                reviewer_state = base_state.model_copy()
+                reviewer_state.sub_task = review_msg
+                next_agents_map["Code_Reviewer"].append(reviewer_state)
+
+            if not plan.ready_tasks and not plan.review_tasks and plan.blocked_tasks:
+                blocked_tasks.extend(plan.blocked_tasks)
+
+        if not next_agents_map and blocked_tasks:
+            blocked_summaries = []
+            for task in blocked_tasks[:8]:
+                file_path = str(task.get("file", "Unknown"))
+                module_name = str(task.get("module", "root"))
+                blocked_by = [str(value).strip() for value in task.get("blocked_by", []) if str(value).strip()]
+                if blocked_by:
+                    blocked_summaries.append(
+                        f"- {file_path} (module {module_name}) blocked by: {', '.join(blocked_by)}"
+                    )
+            pm_msg = (
+                "Critical: The module-team scheduler detected blocked work with no ready wave to run. "
+                "This usually means a cyclic dependency or an invalid dependency edge in the contract. "
+                "Review the module DAG and fix the affected file blocks.\n\n"
+                "Blocked tasks:\n"
+                f"{self._format_bullets(blocked_summaries)}"
             )
-
-            critic_state = base_state.model_copy()
-            critic_state.sub_task = review_msg
-            next_agents_map["Critic"].append(critic_state)
-
-            reviewer_state = base_state.model_copy()
-            reviewer_state.sub_task = review_msg
-            next_agents_map["Code_Reviewer"].append(reviewer_state)
+            new_state = base_state.model_copy()
+            new_state.sub_task = pm_msg
+            next_agents_map["Project_Manager"].append(new_state)
 
         return next_agents_map
 

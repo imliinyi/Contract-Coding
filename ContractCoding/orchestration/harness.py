@@ -24,7 +24,9 @@ PLACEHOLDER_PATTERNS = (
 @dataclass
 class TaskSpec:
     agent_name: str
-    target_file: Optional[str]
+    target_files: Set[str] = field(default_factory=set)
+    primary_target: Optional[str] = None
+    target_module: Optional[str] = None
     owned_files: Set[str] = field(default_factory=set)
 
 
@@ -45,15 +47,57 @@ class TaskHarness:
         self.logger = get_logger(config.LOG_PATH)
 
     def build_spec(self, agent_name: str, state: GeneralState) -> TaskSpec:
-        target_file = None
+        target_files: Set[str] = set()
+        target_module: Optional[str] = None
         if state.sub_task:
-            match = re.search(r"\b(?:Implement/Fix|Fix|Continue implementation of)\s+([^\s]+\.[A-Za-z0-9_]+)\b", state.sub_task)
-            if match:
-                target_file = match.group(1).strip()
-        owned_files = {task["file"] for task in self.document_manager.get_tasks_by_owner(agent_name)}
-        if target_file:
-            owned_files.add(target_file)
-        return TaskSpec(agent_name=agent_name, target_file=target_file, owned_files=owned_files)
+            module_match = re.search(r"^Module team:\s*(.+)$", state.sub_task, re.MULTILINE)
+            if module_match:
+                target_module = module_match.group(1).strip()
+
+            lines = state.sub_task.splitlines()
+            collecting_targets = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("Target files in this module wave:") or stripped.startswith("Files to review:"):
+                    collecting_targets = True
+                    continue
+                if collecting_targets:
+                    if not stripped and target_files:
+                        break
+                    bullet_match = re.match(r"[-*]\s+`?([^`]+?\.[A-Za-z0-9_]+)`?$", stripped)
+                    if bullet_match:
+                        target_files.add(bullet_match.group(1).strip())
+                        continue
+                    if target_files:
+                        break
+
+            if not target_files:
+                match = re.search(
+                    r"\b(?:Implement/Fix|Fix|Continue implementation of)\s+([^\s]+\.[A-Za-z0-9_]+)\b",
+                    state.sub_task,
+                )
+                if match:
+                    target_files.add(match.group(1).strip())
+
+        owned_tasks = self.document_manager.get_tasks_by_owner(agent_name)
+        if target_module:
+            owned_files = {
+                str(task["file"])
+                for task in owned_tasks
+                if str(task.get("module", "")) == target_module and task.get("file")
+            }
+        else:
+            owned_files = {str(task["file"]) for task in owned_tasks if task.get("file")}
+
+        owned_files.update(target_files)
+        primary_target = next(iter(sorted(target_files)), None)
+        return TaskSpec(
+            agent_name=agent_name,
+            target_files=target_files,
+            primary_target=primary_target,
+            target_module=target_module,
+            owned_files=owned_files,
+        )
 
     def _snapshot(self) -> dict[str, int]:
         snapshot: dict[str, int] = {}
@@ -91,53 +135,61 @@ class TaskHarness:
         return violations
 
     def _validate_target_file(self, spec: TaskSpec) -> List[str]:
-        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_file:
+        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_files:
             return []
-        abs_target = os.path.join(self.workspace_dir, spec.target_file)
-        if not os.path.exists(abs_target):
-            return [f"Required target file was not created or updated: {spec.target_file}"]
-        return []
+        missing = []
+        for target_file in sorted(spec.target_files):
+            abs_target = os.path.join(self.workspace_dir, target_file)
+            if not os.path.exists(abs_target):
+                missing.append(f"Required target file was not created or updated: {target_file}")
+        return missing
 
     def _validate_placeholders(self, spec: TaskSpec) -> List[str]:
-        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_file:
+        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_files:
             return []
-
-        abs_target = os.path.join(self.workspace_dir, spec.target_file)
-        if not os.path.exists(abs_target):
-            return []
-
-        _, extension = os.path.splitext(abs_target)
-        if extension.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx"}:
-            return []
-
-        try:
-            with open(abs_target, "r", encoding="utf-8") as handle:
-                content = handle.read()
-        except OSError as exc:
-            return [f"Unable to inspect generated target file {spec.target_file}: {exc}"]
-
         problems = []
-        for pattern in PLACEHOLDER_PATTERNS:
-            if pattern.search(content):
-                problems.append(f"Placeholder implementation remains in {spec.target_file}: pattern '{pattern.pattern}'")
+        for target_file in sorted(spec.target_files):
+            abs_target = os.path.join(self.workspace_dir, target_file)
+            if not os.path.exists(abs_target):
+                continue
+
+            _, extension = os.path.splitext(abs_target)
+            if extension.lower() not in {".py", ".js", ".jsx", ".ts", ".tsx"}:
+                continue
+
+            try:
+                with open(abs_target, "r", encoding="utf-8") as handle:
+                    content = handle.read()
+            except OSError as exc:
+                problems.append(f"Unable to inspect generated target file {target_file}: {exc}")
+                continue
+
+            for pattern in PLACEHOLDER_PATTERNS:
+                if pattern.search(content):
+                    problems.append(
+                        f"Placeholder implementation remains in {target_file}: pattern '{pattern.pattern}'"
+                    )
         return problems
 
     def _validate_status_update(self, spec: TaskSpec) -> List[str]:
-        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_file:
+        if spec.agent_name not in IMPLEMENTATION_ROLES or not spec.target_files:
             return []
-        task = self.document_manager.preview_task(spec.target_file)
-        if not task or task.status not in {"DONE", "VERIFIED"}:
-            return [f"Contract status for {spec.target_file} was not advanced to DONE/VERIFIED."]
-        return []
+        errors = []
+        for target_file in sorted(spec.target_files):
+            task = self.document_manager.preview_task(target_file)
+            if not task or task.status not in {"DONE", "VERIFIED"}:
+                errors.append(f"Contract status for {target_file} was not advanced to DONE/VERIFIED.")
+        return errors
 
     def _record_validation_errors(self, spec: TaskSpec, errors: Iterable[str]) -> None:
-        if not spec.target_file:
+        if not spec.target_files:
             return
-        self.document_manager.record_task_failure(
-            file_path=spec.target_file,
-            issues=list(errors),
-            agent_name=spec.agent_name,
-        )
+        for target_file in sorted(spec.target_files):
+            self.document_manager.record_task_failure(
+                file_path=target_file,
+                issues=list(errors),
+                agent_name=spec.agent_name,
+            )
 
     def execute(self, agent, agent_name: str, state: GeneralState, next_available_agents: list, memory_processor) -> TaskResult:
         spec = self.build_spec(agent_name, state)
@@ -161,7 +213,7 @@ class TaskHarness:
             self.logger.warning(
                 "Harness validation failed for %s on %s: %s",
                 agent_name,
-                spec.target_file,
+                sorted(spec.target_files),
                 validation_errors,
             )
             self._record_validation_errors(spec, validation_errors)

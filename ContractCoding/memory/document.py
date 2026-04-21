@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from ContractCoding.memory.audit import check_missing_specs
 from ContractCoding.memory.contract_state import (
     ContractState,
+    ModuleTeamPlan,
     TaskBlock,
     canonicalize_section_key,
 )
@@ -46,6 +47,10 @@ class DocumentManager:
     def get_tasks(self) -> List[Dict[str, object]]:
         with self._lock:
             return self._state.list_tasks()
+
+    def get_module_plans(self) -> List[ModuleTeamPlan]:
+        with self._lock:
+            return self._state.build_module_plans()
 
     def get_task(self, file_path: str) -> Optional[TaskBlock]:
         with self._lock:
@@ -87,6 +92,19 @@ class DocumentManager:
                 validation_errors.append(f"Task for {file_path} missing 'Owner' field.")
             if status not in {"TODO", "IN_PROGRESS", "ERROR", "DONE", "VERIFIED"}:
                 validation_errors.append(f"Task for {file_path} has invalid Status: {status}")
+
+        known_files = {str(task.get("file", "")) for task in tasks if task.get("file")}
+        for task in tasks:
+            file_path = str(task.get("file", "Unknown"))
+            for dependency in task.get("depends_on", []):
+                dependency_path = str(dependency).strip()
+                if not dependency_path:
+                    continue
+                if dependency_path == file_path:
+                    validation_errors.append(f"Task for {file_path} cannot depend on itself.")
+                    continue
+                if dependency_path not in known_files:
+                    validation_errors.append(f"Task for {file_path} depends on undocumented file: {dependency_path}")
 
         return validation_errors
 

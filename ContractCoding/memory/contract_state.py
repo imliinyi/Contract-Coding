@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+import os
 from dataclasses import dataclass, field
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -62,6 +62,8 @@ for spec in SECTION_SPECS:
         HEADING_TO_KEY[alias] = spec["key"]
 
 FILE_LINE_RE = re.compile(r"^\*\*File:\*\*\s*`?([^`]+)`?\s*$")
+MODULE_LINE_RE = re.compile(r"\*\*Module(?::)?\*\*[: ]+(.+)")
+DEPENDS_ON_LINE_RE = re.compile(r"\*\*Depends On(?::)?\*\*[: ]+(.+)")
 
 
 def canonicalize_section_key(raw_key: str) -> Optional[str]:
@@ -105,6 +107,47 @@ def _strip_empty_edges(lines: List[str]) -> List[str]:
     return lines
 
 
+def _parse_dependency_list(raw_value: str) -> List[str]:
+    if isinstance(raw_value, (list, tuple, set)):
+        return [str(value).strip() for value in raw_value if str(value).strip()]
+
+    raw = str(raw_value or "").strip()
+    if not raw or raw.lower() == "none":
+        return []
+
+    inline_paths = [match.strip() for match in re.findall(r"`([^`]+)`", raw)]
+    if inline_paths:
+        return inline_paths
+
+    parts = re.split(r"[,;|]", raw)
+    cleaned = []
+    for part in parts:
+        candidate = part.strip().strip("`")
+        if candidate and candidate.lower() != "none":
+            cleaned.append(candidate)
+    return cleaned
+
+
+def format_dependency_list(depends_on: Iterable[str]) -> str:
+    values = [value.strip() for value in depends_on if value and value.strip()]
+    if not values:
+        return "None"
+    return ", ".join(f"`{value}`" for value in values)
+
+
+def derive_module_name(file_path: str, explicit_module: Optional[str] = None) -> str:
+    module = str(explicit_module or "").strip()
+    if module:
+        return module
+
+    normalized_path = str(file_path or "").replace("\\", "/").strip("/")
+    if not normalized_path:
+        return "root"
+
+    directory = os.path.dirname(normalized_path).strip("/")
+    return directory or "root"
+
+
 @dataclass
 class TaskBlock:
     file: str
@@ -112,6 +155,8 @@ class TaskBlock:
     owner: str = "Unknown"
     status: str = "TODO"
     version: Optional[int] = None
+    module: str = ""
+    depends_on: List[str] = field(default_factory=list)
 
     @classmethod
     def from_lines(cls, lines: Iterable[str]) -> "TaskBlock":
@@ -120,6 +165,8 @@ class TaskBlock:
         owner = "Unknown"
         status = "TODO"
         version: Optional[int] = None
+        module = ""
+        depends_on: List[str] = []
 
         for line in block_lines:
             file_match = FILE_LINE_RE.match(line.strip())
@@ -141,8 +188,26 @@ class TaskBlock:
             version_match = re.search(r"\*\*Version(?::)?\*\*[: ]+(\d+)", line)
             if version_match:
                 version = int(version_match.group(1))
+                continue
 
-        return cls(file=file_path, lines=block_lines, owner=owner, status=status, version=version)
+            module_match = MODULE_LINE_RE.search(line)
+            if module_match:
+                module = module_match.group(1).strip().strip("`")
+                continue
+
+            depends_match = DEPENDS_ON_LINE_RE.search(line)
+            if depends_match:
+                depends_on = _parse_dependency_list(depends_match.group(1))
+
+        return cls(
+            file=file_path,
+            lines=block_lines,
+            owner=owner,
+            status=status,
+            version=version,
+            module=module,
+            depends_on=depends_on,
+        )
 
     def copy(self) -> "TaskBlock":
         return TaskBlock(
@@ -151,6 +216,8 @@ class TaskBlock:
             owner=self.owner,
             status=self.status,
             version=self.version,
+            module=self.module,
+            depends_on=list(self.depends_on),
         )
 
     def render(self) -> str:
@@ -176,6 +243,14 @@ class TaskBlock:
     def set_version(self, version: int) -> None:
         self.version = version
         self._update_field("Version", str(version))
+
+    def set_module(self, module: str) -> None:
+        self.module = module.strip()
+        self._update_field("Module", self.module)
+
+    def set_depends_on(self, depends_on: Iterable[str]) -> None:
+        self.depends_on = [value.strip() for value in depends_on if value and value.strip()]
+        self._update_field("Depends On", format_dependency_list(self.depends_on))
 
     def append_issues(self, issues: Iterable[str]) -> None:
         cleaned = [issue.strip() for issue in issues if issue and issue.strip()]
@@ -204,8 +279,24 @@ class TaskBlock:
             "owner": self.owner,
             "status": self.status,
             "version": self.version,
+            "module": derive_module_name(self.file, self.module),
+            "depends_on": list(self.depends_on),
             "block": self.render(),
         }
+
+
+@dataclass
+class ModuleTeamPlan:
+    name: str
+    files: List[str]
+    module_dependencies: List[str]
+    ready_tasks: List[Dict[str, object]] = field(default_factory=list)
+    blocked_tasks: List[Dict[str, object]] = field(default_factory=list)
+    done_tasks: List[Dict[str, object]] = field(default_factory=list)
+    verified_tasks: List[Dict[str, object]] = field(default_factory=list)
+    review_tasks: List[Dict[str, object]] = field(default_factory=list)
+    build_complete: bool = False
+    all_verified: bool = False
 
 
 def _split_symbolic_body(body_text: str) -> Tuple[List[str], List[str], Dict[str, TaskBlock]]:
@@ -359,7 +450,18 @@ class ContractState:
     def upsert_task(self, task: TaskBlock, keep_order: bool = True) -> None:
         if not task.file:
             return
-        self.tasks[task.file] = task.copy()
+        existing = self.tasks.get(task.file)
+        merged = task.copy()
+        if existing:
+            if merged.owner == "Unknown" and existing.owner != "Unknown":
+                merged.set_owner(existing.owner)
+            if merged.version is None and existing.version is not None:
+                merged.set_version(existing.version)
+            if not merged.module and existing.module:
+                merged.set_module(existing.module)
+            if not merged.depends_on and existing.depends_on:
+                merged.set_depends_on(existing.depends_on)
+        self.tasks[task.file] = merged
         if task.file not in self.task_order:
             self.task_order.append(task.file)
         elif not keep_order:
@@ -406,3 +508,89 @@ class ContractState:
         if issues:
             task.append_issues(issues)
         self.upsert_task(task)
+
+    def build_module_plans(self) -> List[ModuleTeamPlan]:
+        records = self.list_tasks()
+        if not records:
+            return []
+
+        task_by_file: Dict[str, Dict[str, object]] = {}
+        module_order: List[str] = []
+        grouped_tasks: Dict[str, List[Dict[str, object]]] = {}
+
+        for record in records:
+            file_path = str(record.get("file", "")).strip()
+            normalized = dict(record)
+            normalized["module"] = derive_module_name(file_path, str(record.get("module", "") or ""))
+            normalized["depends_on"] = _parse_dependency_list(record.get("depends_on", []))
+            normalized["blocked_by"] = []
+            task_by_file[file_path] = normalized
+            module_name = str(normalized["module"])
+            if module_name not in grouped_tasks:
+                grouped_tasks[module_name] = []
+                module_order.append(module_name)
+            grouped_tasks[module_name].append(normalized)
+
+        active_statuses = {"TODO", "IN_PROGRESS", "ERROR"}
+        dependency_ready_statuses = {"DONE", "VERIFIED"}
+        plans: List[ModuleTeamPlan] = []
+
+        for module_name in module_order:
+            module_tasks = grouped_tasks[module_name]
+            ready_tasks: List[Dict[str, object]] = []
+            blocked_tasks: List[Dict[str, object]] = []
+            done_tasks: List[Dict[str, object]] = []
+            verified_tasks: List[Dict[str, object]] = []
+            module_dependencies: List[str] = []
+
+            for task in module_tasks:
+                task_copy = dict(task)
+                dependency_files = []
+                for dependency in task_copy.get("depends_on", []):
+                    dependency_record = task_by_file.get(str(dependency))
+                    if not dependency_record:
+                        continue
+                    dependency_files.append(str(dependency))
+                    dependency_module = str(dependency_record.get("module", "root"))
+                    if dependency_module != module_name and dependency_module not in module_dependencies:
+                        module_dependencies.append(dependency_module)
+
+                status = str(task_copy.get("status", "TODO"))
+                if status in active_statuses:
+                    blocked_by = [
+                        dependency
+                        for dependency in dependency_files
+                        if str(task_by_file[dependency].get("status", "TODO")) not in dependency_ready_statuses
+                    ]
+                    task_copy["blocked_by"] = blocked_by
+                    if blocked_by:
+                        blocked_tasks.append(task_copy)
+                    else:
+                        ready_tasks.append(task_copy)
+                elif status == "DONE":
+                    done_tasks.append(task_copy)
+                elif status == "VERIFIED":
+                    verified_tasks.append(task_copy)
+
+            review_tasks = [dict(task) for task in done_tasks] if not ready_tasks else []
+            build_complete = not any(
+                str(task.get("status", "TODO")) in active_statuses
+                for task in module_tasks
+            )
+            all_verified = bool(module_tasks) and len(verified_tasks) == len(module_tasks)
+            plans.append(
+                ModuleTeamPlan(
+                    name=module_name,
+                    files=[str(task.get("file", "")) for task in module_tasks if task.get("file")],
+                    module_dependencies=module_dependencies,
+                    ready_tasks=ready_tasks,
+                    blocked_tasks=blocked_tasks,
+                    done_tasks=done_tasks,
+                    verified_tasks=verified_tasks,
+                    review_tasks=review_tasks,
+                    build_complete=build_complete,
+                    all_verified=all_verified,
+                )
+            )
+
+        return plans
