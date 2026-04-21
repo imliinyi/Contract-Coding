@@ -33,7 +33,7 @@ class Engine:
 
     def _reset_runtime_state(self) -> None:
         self.memory_processor = MemoryProcessor(self.config, list(self.agents.keys()), self.config.MEMORY_WINDOW)
-        self.document_manager = DocumentManager()
+        self.document_manager = DocumentManager(workspace_dir=self.config.WORKSPACE_DIR)
         self.agent_runner = AgentRunner(
             config=self.config,
             agents=self.agents,

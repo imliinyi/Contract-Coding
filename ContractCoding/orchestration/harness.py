@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional, Set
 
 from ContractCoding.config import Config
 from ContractCoding.memory.document import DocumentManager
-from ContractCoding.orchestration.execution_plane import ExecutionPlaneManager
+from ContractCoding.orchestration.execution_plane import ExecutionPlaneManager, ExecutionPlanePromotionError
 from ContractCoding.orchestration.workspace_context import workspace_scope
 from ContractCoding.utils.log import get_logger
 from ContractCoding.utils.state import GeneralState
@@ -227,14 +227,24 @@ class TaskHarness:
                 )
                 self._record_validation_errors(spec, validation_errors)
             else:
-                promoted = self.execution_plane_manager.promote(plane, changed_files)
-                if plane.isolated:
-                    self.logger.info(
-                        "Promoted execution plane %s for module %s into workspace: %s",
-                        plane.mode,
-                        plane.module_name,
-                        sorted(promoted),
+                try:
+                    promoted = self.execution_plane_manager.promote(plane, changed_files)
+                    if plane.isolated:
+                        self.logger.info(
+                            "Promoted execution plane %s for module %s into workspace: %s",
+                            plane.mode,
+                            plane.module_name,
+                            sorted(promoted),
+                        )
+                except ExecutionPlanePromotionError as exc:
+                    validation_errors.append(str(exc))
+                    self.logger.warning(
+                        "Harness promotion rejected for %s on %s: %s",
+                        agent_name,
+                        sorted(spec.target_files),
+                        exc,
                     )
+                    self._record_validation_errors(spec, validation_errors)
 
             return TaskResult(
                 output_state=output_state,

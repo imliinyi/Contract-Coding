@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -7,6 +8,7 @@ from ContractCoding.agents.forge import AgentCapability, AgentForge
 from ContractCoding.config import Config
 from ContractCoding.memory.document import DocumentManager
 from ContractCoding.memory.processor import MemoryProcessor
+from ContractCoding.orchestration.execution_plane import ExecutionPlaneManager, ExecutionPlanePromotionError
 from ContractCoding.orchestration.harness import TaskHarness
 from ContractCoding.orchestration.workspace_context import get_current_workspace, workspace_scope
 from ContractCoding.orchestration.traverser import GraphTraverser
@@ -180,6 +182,23 @@ class ContractCodingRefactorTests(unittest.TestCase):
             second_write = fs.write_file("src/app.ts", "console.log('updated');\n")
             self.assertIn("artifact version 2", second_write)
             self.assertEqual(store.get_version(os.path.join(tmpdir, "src", "app.ts")), 2)
+            self.assertTrue(
+                os.path.exists(os.path.join(tmpdir, ".contractcoding", "artifacts", "src", "app.ts.json"))
+            )
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, ".contractcoding", "artifacts.json")))
+
+    def test_artifact_metadata_is_stored_per_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = WorkspaceFS(tmpdir)
+            fs.write_file("src/app.ts", "console.log('a');\n")
+            fs.write_file("src/other.ts", "console.log('b');\n")
+
+            self.assertTrue(
+                os.path.exists(os.path.join(tmpdir, ".contractcoding", "artifacts", "src", "app.ts.json"))
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(tmpdir, ".contractcoding", "artifacts", "src", "other.ts.json"))
+            )
 
     def test_main_entrypoint_no_longer_raises_name_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -233,6 +252,16 @@ class ContractCodingRefactorTests(unittest.TestCase):
         self.assertIsNotNone(task)
         self.assertEqual(task.status, "DONE")
         self.assertEqual(len(manager.get_last_conflicts()), 1)
+
+    def test_document_manager_persists_under_workspace_contract_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = DocumentManager(workspace_dir=tmpdir)
+            manager.execute_actions(
+                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
+            )
+
+            self.assertTrue(manager.document_path.startswith(os.path.join(tmpdir, ".contractcoding")))
+            self.assertTrue(os.path.exists(manager.document_path))
 
     def test_partial_task_updates_preserve_module_metadata(self):
         manager = DocumentManager()
@@ -382,6 +411,76 @@ class ContractCodingRefactorTests(unittest.TestCase):
             task = manager.get_task("app.py")
             self.assertIsNotNone(task)
             self.assertEqual(task.status, "DONE")
+
+    def test_execution_plane_promotion_rejects_newer_workspace_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "app.py"), "w", encoding="utf-8") as handle:
+                handle.write("print('base')\n")
+
+            config = Config(
+                WORKSPACE_DIR=tmpdir,
+                LOG_PATH=os.path.join(tmpdir, "agent.log"),
+                EXECUTION_PLANE="sandbox",
+            )
+            manager = ExecutionPlaneManager(config)
+            plane = manager.acquire("core/runtime", isolated=True)
+            try:
+                with open(os.path.join(plane.working_dir, "app.py"), "w", encoding="utf-8") as handle:
+                    handle.write("print('plane')\n")
+                with open(os.path.join(tmpdir, "app.py"), "w", encoding="utf-8") as handle:
+                    handle.write("print('newer')\n")
+
+                with self.assertRaises(ExecutionPlanePromotionError):
+                    manager.promote(plane, {"app.py"})
+
+                with open(os.path.join(tmpdir, "app.py"), "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), "print('newer')\n")
+            finally:
+                manager.cleanup(plane)
+
+    def test_worktree_plane_inherits_dirty_workspace_snapshot(self):
+        with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as runtime_dir:
+            subprocess.run(["git", "-C", repo_dir, "init"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-C", repo_dir, "config", "user.email", "codex@example.com"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", repo_dir, "config", "user.name", "Codex"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            with open(os.path.join(repo_dir, "app.py"), "w", encoding="utf-8") as handle:
+                handle.write("print('committed')\n")
+            subprocess.run(["git", "-C", repo_dir, "add", "app.py"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "-C", repo_dir, "commit", "-m", "init"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            with open(os.path.join(repo_dir, "app.py"), "w", encoding="utf-8") as handle:
+                handle.write("print('dirty')\n")
+
+            config = Config(
+                WORKSPACE_DIR=repo_dir,
+                LOG_PATH=os.path.join(repo_dir, "agent.log"),
+                EXECUTION_PLANE="worktree",
+                EXECUTION_ROOT=runtime_dir,
+                FALLBACK_TO_SANDBOX=False,
+            )
+            manager = ExecutionPlaneManager(config)
+            plane = manager.acquire("core/runtime", isolated=True)
+            try:
+                self.assertEqual(plane.mode, "worktree")
+                with open(os.path.join(plane.working_dir, "app.py"), "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), "print('dirty')\n")
+            finally:
+                manager.cleanup(plane)
 
     def test_document_manager_compiles_module_team_plans(self):
         manager = DocumentManager()

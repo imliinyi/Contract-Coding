@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-import json
+import os
+import tempfile
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -20,9 +20,16 @@ from ContractCoding.utils.log import get_logger
 class DocumentManager:
     """Single-writer contract state with Markdown rendering for humans."""
 
-    def __init__(self):
+    def __init__(self, workspace_dir: Optional[str] = None):
         self.logger = get_logger()
         self._lock = threading.RLock()
+        if workspace_dir:
+            self.workspace_dir = os.path.abspath(workspace_dir)
+            self.state_dir = os.path.join(self.workspace_dir, ".contractcoding")
+        else:
+            self.workspace_dir = None
+            self.state_dir = tempfile.mkdtemp(prefix="contractcoding-doc-")
+        self.document_path = os.path.join(self.state_dir, "document.md")
         self._state = ContractState.empty()
         self._version = 0
         self._history: Dict[int, ContractState] = {0: self._state.copy()}
@@ -32,7 +39,8 @@ class DocumentManager:
         self._persist()
 
     def _persist(self) -> None:
-        with open("document.md", "w", encoding="utf-8") as handle:
+        os.makedirs(self.state_dir, exist_ok=True)
+        with open(self.document_path, "w", encoding="utf-8") as handle:
             handle.write(self._state.to_markdown())
 
     def get(self) -> str:

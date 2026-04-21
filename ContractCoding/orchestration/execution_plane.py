@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Optional, Set
+from threading import RLock
+from typing import Dict, Optional, Set
 from uuid import uuid4
 
 from ContractCoding.config import Config
@@ -42,6 +44,11 @@ class ExecutionPlane:
     root_dir: str
     isolated: bool = False
     repo_root: Optional[str] = None
+    baseline_hashes: Dict[str, Optional[str]] | None = None
+
+
+class ExecutionPlanePromotionError(RuntimeError):
+    """Raised when an isolated plane cannot be promoted safely."""
 
 
 class ExecutionPlaneManager:
@@ -59,10 +66,12 @@ class ExecutionPlaneManager:
                 os.path.join(os.path.dirname(self.base_workspace_dir), ".contractcoding-execution")
             )
         os.makedirs(self.runtime_root, exist_ok=True)
+        self._promotion_lock = RLock()
 
     def acquire(self, module_name: Optional[str], isolated: bool) -> ExecutionPlane:
         normalized_module = _safe_name(module_name or "root")
         requested_mode = (self.config.EXECUTION_PLANE or "workspace").strip().lower()
+        baseline_hashes = self._capture_file_hashes(self.base_workspace_dir)
 
         if not isolated or requested_mode == "workspace":
             return ExecutionPlane(
@@ -72,33 +81,42 @@ class ExecutionPlaneManager:
                 working_dir=self.base_workspace_dir,
                 root_dir=self.base_workspace_dir,
                 isolated=False,
+                baseline_hashes=baseline_hashes,
             )
 
         if requested_mode == "worktree":
-            plane = self._create_worktree_plane(normalized_module)
+            plane = self._create_worktree_plane(normalized_module, baseline_hashes)
             if plane:
                 return plane
             if not self.config.FALLBACK_TO_SANDBOX:
                 raise RuntimeError("Unable to create git worktree execution plane and sandbox fallback is disabled.")
 
-        return self._create_sandbox_plane(normalized_module)
+        return self._create_sandbox_plane(normalized_module, baseline_hashes)
 
     def promote(self, plane: ExecutionPlane, changed_files: Set[str]) -> Set[str]:
         if not plane.isolated:
             return set(changed_files)
 
-        promoted: Set[str] = set()
-        for rel_path in sorted(changed_files):
-            if not rel_path or rel_path == ".":
-                continue
-            src = os.path.join(plane.working_dir, rel_path)
-            dest = os.path.join(self.base_workspace_dir, rel_path)
-            if not os.path.exists(src):
-                continue
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copy2(src, dest)
-            promoted.add(rel_path)
-        return promoted
+        with self._promotion_lock:
+            conflicts = self._detect_promotion_conflicts(plane, changed_files)
+            if conflicts:
+                raise ExecutionPlanePromotionError(
+                    "Execution plane promotion rejected due to newer base workspace changes: "
+                    + ", ".join(conflicts)
+                )
+
+            promoted: Set[str] = set()
+            for rel_path in sorted(changed_files):
+                if not rel_path or rel_path == ".":
+                    continue
+                src = os.path.join(plane.working_dir, rel_path)
+                dest = os.path.join(self.base_workspace_dir, rel_path)
+                if not os.path.exists(src):
+                    continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(src, dest)
+                promoted.add(rel_path)
+            return promoted
 
     def cleanup(self, plane: ExecutionPlane) -> None:
         if not plane.isolated or self.config.KEEP_EXECUTION_PLANES:
@@ -117,7 +135,11 @@ class ExecutionPlaneManager:
         except Exception as exc:
             self.logger.warning("Execution plane cleanup failed for %s: %s", plane.root_dir, exc)
 
-    def _create_sandbox_plane(self, module_name: str) -> ExecutionPlane:
+    def _create_sandbox_plane(
+        self,
+        module_name: str,
+        baseline_hashes: Dict[str, Optional[str]],
+    ) -> ExecutionPlane:
         sandbox_root = os.path.join(self.runtime_root, "sandboxes")
         os.makedirs(sandbox_root, exist_ok=True)
 
@@ -134,9 +156,14 @@ class ExecutionPlaneManager:
             working_dir=plane_root,
             root_dir=plane_root,
             isolated=True,
+            baseline_hashes=dict(baseline_hashes),
         )
 
-    def _create_worktree_plane(self, module_name: str) -> Optional[ExecutionPlane]:
+    def _create_worktree_plane(
+        self,
+        module_name: str,
+        baseline_hashes: Dict[str, Optional[str]],
+    ) -> Optional[ExecutionPlane]:
         git_info = self._get_git_workspace_info()
         if git_info is None:
             return None
@@ -157,6 +184,8 @@ class ExecutionPlaneManager:
             return None
 
         working_dir = os.path.join(worktree_root, workspace_rel) if workspace_rel else worktree_root
+        os.makedirs(working_dir, exist_ok=True)
+        self._sync_workspace_snapshot(self.base_workspace_dir, working_dir, baseline_hashes)
         return ExecutionPlane(
             mode="worktree",
             module_name=module_name,
@@ -165,6 +194,7 @@ class ExecutionPlaneManager:
             root_dir=worktree_root,
             isolated=True,
             repo_root=repo_root,
+            baseline_hashes=dict(baseline_hashes),
         )
 
     def _get_git_workspace_info(self) -> Optional[tuple[str, str]]:
@@ -182,9 +212,67 @@ class ExecutionPlaneManager:
         if not repo_root:
             return None
 
-        workspace_path = Path(self.base_workspace_dir)
-        repo_path = Path(repo_root)
+        workspace_path = Path(os.path.realpath(self.base_workspace_dir))
+        repo_path = Path(os.path.realpath(repo_root))
         workspace_rel = os.path.relpath(workspace_path, repo_path)
         if workspace_rel == ".":
             workspace_rel = ""
         return repo_root, workspace_rel
+
+    def _capture_file_hashes(self, root_dir: str) -> Dict[str, Optional[str]]:
+        snapshot: Dict[str, Optional[str]] = {}
+        for current_root, dirs, files in os.walk(root_dir):
+            dirs[:] = [name for name in dirs if name not in IGNORE_NAMES]
+            for file_name in files:
+                if file_name in IGNORE_NAMES:
+                    continue
+                abs_path = os.path.join(current_root, file_name)
+                rel_path = os.path.relpath(abs_path, root_dir)
+                snapshot[rel_path] = self._hash_file(abs_path)
+        return snapshot
+
+    def _hash_file(self, file_path: str) -> Optional[str]:
+        if not os.path.exists(file_path):
+            return None
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _sync_workspace_snapshot(
+        self,
+        source_dir: str,
+        target_dir: str,
+        baseline_hashes: Dict[str, Optional[str]],
+    ) -> None:
+        target_hashes = self._capture_file_hashes(target_dir)
+
+        for rel_path in sorted(target_hashes):
+            if rel_path not in baseline_hashes:
+                try:
+                    os.remove(os.path.join(target_dir, rel_path))
+                except FileNotFoundError:
+                    pass
+
+        for rel_path in sorted(baseline_hashes):
+            src = os.path.join(source_dir, rel_path)
+            dest = os.path.join(target_dir, rel_path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+
+    def _detect_promotion_conflicts(
+        self,
+        plane: ExecutionPlane,
+        changed_files: Set[str],
+    ) -> list[str]:
+        baseline_hashes = plane.baseline_hashes or {}
+        conflicts: list[str] = []
+        for rel_path in sorted(changed_files):
+            if not rel_path or rel_path == ".":
+                continue
+            baseline_hash = baseline_hashes.get(rel_path)
+            current_hash = self._hash_file(os.path.join(self.base_workspace_dir, rel_path))
+            if current_hash != baseline_hash:
+                conflicts.append(rel_path)
+        return conflicts
