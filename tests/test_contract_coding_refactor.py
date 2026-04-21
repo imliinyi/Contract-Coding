@@ -1,4 +1,6 @@
+from contextlib import contextmanager
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -15,7 +17,45 @@ from ContractCoding.utils.state import GeneralState
 import main as contract_main
 
 
-def build_contract_markdown(status: str = "TODO") -> str:
+@contextmanager
+def local_tempdir():
+    root = os.path.join(os.getcwd(), ".tmp_test_runs")
+    os.makedirs(root, exist_ok=True)
+    path = tempfile.mkdtemp(dir=root)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def build_contract_markdown(files, dependency_lines="") -> str:
+    directory_lines = ["workspace/"]
+    for file_spec in files:
+        directory_lines.append(f"  {file_spec['file']}")
+
+    file_blocks = []
+    for file_spec in files:
+        depends_on = file_spec.get("depends_on", [])
+        depends_line = ""
+        if depends_on:
+            depends_line = f"\n*   **Depends On:** {', '.join(depends_on)}"
+
+        execution_mode = file_spec.get("execution", "single")
+        file_blocks.append(
+            "\n".join(
+                [
+                    f"**File:** `{file_spec['file']}`",
+                    f"*   **Module:** {file_spec.get('module', 'Core')}",
+                    f"*   **Execution:** {execution_mode}",
+                    f"*   **Function:** `{file_spec.get('symbol', 'run')}`",
+                    f"*   **Owner:** {file_spec.get('owner', 'Backend_Engineer')}",
+                    f"*   **Version:** {file_spec.get('version', 1)}",
+                    f"*   **Status:** {file_spec.get('status', 'TODO')}",
+                    depends_line.lstrip("\n"),
+                ]
+            ).strip()
+        )
+
     return f"""## Product Requirement Document (PRD)
 
 ### 1.1 Project Overview
@@ -31,20 +71,16 @@ Minimal contract
 
 ### 2.1 Directory Structure
 ```text
-workspace/
-├── app.py
+{chr(10).join(directory_lines)}
 ```
 
 ### 2.2 Global Shared Knowledge
 
 ### 2.3 Dependency Relationships(MUST):
+{dependency_lines}
 
 ### 2.4 Symbolic API Specifications
-**File:** `app.py`
-*   **Class:** `App`
-*   **Owner:** Backend_Engineer
-*   **Version:** 1
-*   **Status:** {status}
+{chr(10).join(chr(10) + block for block in file_blocks).strip()}
 
 ### Status Model & Termination Guard
 - Status in one line: use `TODO/DONE/ERROR/VERIFIED`; end only when all are `VERIFIED`.
@@ -88,7 +124,7 @@ class DummyImplementationAgent:
 
 class ContractCodingRefactorTests(unittest.TestCase):
     def test_workspace_write_file_uses_sidecar_metadata(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with local_tempdir() as tmpdir:
             fs = WorkspaceFS(tmpdir)
             store = ArtifactMetadataStore(tmpdir)
 
@@ -105,7 +141,7 @@ class ContractCodingRefactorTests(unittest.TestCase):
             self.assertEqual(store.get_version(os.path.join(tmpdir, "src", "app.ts")), 2)
 
     def test_main_entrypoint_no_longer_raises_name_error(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with local_tempdir() as tmpdir:
             with mock.patch(
                 "sys.argv",
                 ["main.py", "--workspace", tmpdir, "--log-path", os.path.join(tmpdir, "agent.log")],
@@ -115,7 +151,22 @@ class ContractCodingRefactorTests(unittest.TestCase):
     def test_document_manager_rejects_cross_agent_same_target_conflict(self):
         manager = DocumentManager()
         manager.execute_actions(
-            [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
+            [
+                {
+                    "type": "add",
+                    "agent_name": "Project_Manager",
+                    "content": build_contract_markdown(
+                        [
+                            {
+                                "file": "app.py",
+                                "module": "runtime",
+                                "owner": "Backend_Engineer",
+                                "status": "TODO",
+                            }
+                        ]
+                    ),
+                }
+            ]
         )
 
         manager.begin_layer_aggregation(manager.get_version())
@@ -127,7 +178,9 @@ class ContractCodingRefactorTests(unittest.TestCase):
                     "content": {
                         "Symbolic API Specifications": (
                             "**File:** `app.py`\n"
-                            "*   **Class:** `App`\n"
+                            "*   **Module:** runtime\n"
+                            "*   **Execution:** single\n"
+                            "*   **Function:** `run`\n"
                             "*   **Owner:** Backend_Engineer\n"
                             "*   **Version:** 1\n"
                             "*   **Status:** DONE"
@@ -140,7 +193,9 @@ class ContractCodingRefactorTests(unittest.TestCase):
                     "content": {
                         "Symbolic API Specifications": (
                             "**File:** `app.py`\n"
-                            "*   **Class:** `App`\n"
+                            "*   **Module:** runtime\n"
+                            "*   **Execution:** single\n"
+                            "*   **Function:** `run`\n"
                             "*   **Owner:** Backend_Engineer\n"
                             "*   **Version:** 1\n"
                             "*   **Status:** ERROR\n"
@@ -157,12 +212,65 @@ class ContractCodingRefactorTests(unittest.TestCase):
         self.assertEqual(task.status, "DONE")
         self.assertEqual(len(manager.get_last_conflicts()), 1)
 
+    def test_document_manager_groups_algorithm_contract_into_module_cells(self):
+        manager = DocumentManager()
+        manager.execute_actions(
+            [
+                {
+                    "type": "add",
+                    "agent_name": "Project_Manager",
+                    "content": build_contract_markdown(
+                        [
+                            {
+                                "file": "search.py",
+                                "module": "Search Core",
+                                "owner": "Algorithm_Engineer",
+                                "execution": "parallel",
+                            },
+                            {
+                                "file": "heuristics.py",
+                                "module": "Search Core",
+                                "owner": "Algorithm_Engineer",
+                                "execution": "parallel",
+                            },
+                            {
+                                "file": "cli.py",
+                                "module": "CLI",
+                                "owner": "Backend_Engineer",
+                                "depends_on": ["Search Core"],
+                            },
+                        ]
+                    ),
+                }
+            ]
+        )
+
+        modules = manager.get_modules()
+        self.assertEqual([module["module"] for module in modules], ["Search Core", "CLI"])
+        self.assertEqual(modules[0]["files"], ["search.py", "heuristics.py"])
+        self.assertEqual(modules[1]["dependencies"], ["Search Core"])
+
     def test_graph_traverser_returns_latest_output_state(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with local_tempdir() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"), MAX_LAYERS=4)
             manager = DocumentManager()
             manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="VERIFIED")}]
+                [
+                    {
+                        "type": "add",
+                        "agent_name": "Project_Manager",
+                        "content": build_contract_markdown(
+                            [
+                                {
+                                    "file": "app.py",
+                                    "module": "runtime",
+                                    "owner": "Backend_Engineer",
+                                    "status": "VERIFIED",
+                                }
+                            ]
+                        ),
+                    }
+                ]
             )
 
             traverser = GraphTraverser(
@@ -179,8 +287,106 @@ class ContractCodingRefactorTests(unittest.TestCase):
             self.assertEqual(terminating_states[0].output, "Architect-output")
             self.assertEqual(terminating_states[0].role, "Architect")
 
+    def test_graph_traverser_schedules_parallel_module_packets_by_owner(self):
+        manager = DocumentManager()
+        manager.execute_actions(
+            [
+                {
+                    "type": "add",
+                    "agent_name": "Project_Manager",
+                    "content": build_contract_markdown(
+                        [
+                            {
+                                "file": "frontend/ui.tsx",
+                                "module": "Experience",
+                                "owner": "Frontend_Engineer",
+                                "execution": "parallel",
+                            },
+                            {
+                                "file": "backend/runtime.py",
+                                "module": "Experience",
+                                "owner": "Backend_Engineer",
+                                "execution": "parallel",
+                            },
+                        ]
+                    ),
+                }
+            ]
+        )
+
+        traverser = GraphTraverser(
+            config=Config(WORKSPACE_DIR="workspace", LOG_PATH=os.devnull),
+            agent_runner=FakeRunner(),
+            memory_processor=MemoryProcessor(Config(), ["Project_Manager", "Architect"], 100),
+            document_manager=manager,
+        )
+
+        schedule = traverser._schedule_from_contract(
+            manager.get(),
+            {"Architect": [GeneralState(task="demo", sub_task="", role="user", thinking="", output="")]},
+        )
+
+        self.assertIn("Frontend_Engineer", schedule)
+        self.assertIn("Backend_Engineer", schedule)
+        self.assertIn("Module Cell: Experience", schedule["Frontend_Engineer"][0].sub_task)
+        self.assertIn("Module Cell: Experience", schedule["Backend_Engineer"][0].sub_task)
+
+    def test_graph_traverser_respects_serial_execution_with_module_dependencies(self):
+        manager = DocumentManager()
+        manager.execute_actions(
+            [
+                {
+                    "type": "add",
+                    "agent_name": "Project_Manager",
+                    "content": build_contract_markdown(
+                        [
+                            {
+                                "file": "search.py",
+                                "module": "Search Core",
+                                "owner": "Algorithm_Engineer",
+                                "execution": "single",
+                                "status": "TODO",
+                            },
+                            {
+                                "file": "heuristics.py",
+                                "module": "Search Core",
+                                "owner": "Algorithm_Engineer",
+                                "execution": "single",
+                                "status": "TODO",
+                                "depends_on": ["search.py"],
+                            },
+                            {
+                                "file": "runner.py",
+                                "module": "Runner",
+                                "owner": "Backend_Engineer",
+                                "status": "TODO",
+                                "depends_on": ["Search Core"],
+                            },
+                        ]
+                    ),
+                }
+            ]
+        )
+
+        traverser = GraphTraverser(
+            config=Config(WORKSPACE_DIR="workspace", LOG_PATH=os.devnull),
+            agent_runner=FakeRunner(),
+            memory_processor=MemoryProcessor(Config(), ["Project_Manager", "Architect"], 100),
+            document_manager=manager,
+        )
+
+        schedule = traverser._schedule_from_contract(
+            manager.get(),
+            {"Architect": [GeneralState(task="demo", sub_task="", role="user", thinking="", output="")]},
+        )
+
+        self.assertIn("Algorithm_Engineer", schedule)
+        self.assertNotIn("Backend_Engineer", schedule)
+        self.assertIn("Primary target file: `search.py`", schedule["Algorithm_Engineer"][0].sub_task)
+        self.assertNotIn("`heuristics.py`", schedule["Algorithm_Engineer"][0].sub_task)
+
     def test_agent_forge_wires_search_tool(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with local_tempdir() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
             forge = AgentForge(config)
             agent = forge.create_agent("Researcher", AgentCapability(FILE=True, SEARCH=True))
@@ -188,11 +394,26 @@ class ContractCodingRefactorTests(unittest.TestCase):
             self.assertIn("search_web", tool_names)
 
     def test_task_harness_records_invalid_implementation(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with local_tempdir() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
             manager = DocumentManager()
             manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
+                [
+                    {
+                        "type": "add",
+                        "agent_name": "Project_Manager",
+                        "content": build_contract_markdown(
+                            [
+                                {
+                                    "file": "app.py",
+                                    "module": "runtime",
+                                    "owner": "Backend_Engineer",
+                                    "status": "TODO",
+                                }
+                            ]
+                        ),
+                    }
+                ]
             )
 
             harness = TaskHarness(config, manager)
@@ -201,7 +422,12 @@ class ContractCodingRefactorTests(unittest.TestCase):
                 agent_name="Backend_Engineer",
                 state=GeneralState(
                     task="demo",
-                    sub_task="Implement/Fix app.py. Current Status: TODO.",
+                    sub_task=(
+                        "Module Cell: runtime\n"
+                        "Primary target file: `app.py`\n"
+                        "Assigned files in this module packet:\n"
+                        "- `app.py`\n"
+                    ),
                     role="user",
                     thinking="",
                     output="",

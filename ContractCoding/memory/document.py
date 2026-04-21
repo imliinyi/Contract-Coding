@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from ContractCoding.memory.audit import check_missing_specs
 from ContractCoding.memory.contract_state import (
     ContractState,
+    ModuleCell,
     TaskBlock,
     canonicalize_section_key,
 )
@@ -52,6 +53,22 @@ class DocumentManager:
             task = self._state.get_task(file_path)
             return task.copy() if task else None
 
+    def get_modules(self) -> List[Dict[str, object]]:
+        with self._lock:
+            return self._state.list_modules()
+
+    def get_module(self, module_name: str) -> Optional[ModuleCell]:
+        with self._lock:
+            module = self._state.get_module(module_name)
+            return module if module is None else ModuleCell(
+                name=module.name,
+                files=list(module.files),
+                owners=list(module.owners),
+                dependencies=list(module.dependencies),
+                execution_mode=module.execution_mode,
+                tasks=[task.copy() for task in module.tasks],
+            )
+
     def preview_task(self, file_path: str) -> Optional[TaskBlock]:
         with self._lock:
             state = self._state
@@ -60,9 +77,28 @@ class DocumentManager:
             task = state.get_task(file_path)
             return task.copy() if task else None
 
+    def preview_module(self, module_name: str) -> Optional[ModuleCell]:
+        with self._lock:
+            state = self._state
+            if self._aggregate_mode and self._queued_actions:
+                state, _ = self._apply_actions(self._state, self._queued_actions, detect_conflicts=False)
+            module = state.get_module(module_name)
+            return module if module is None else ModuleCell(
+                name=module.name,
+                files=list(module.files),
+                owners=list(module.owners),
+                dependencies=list(module.dependencies),
+                execution_mode=module.execution_mode,
+                tasks=[task.copy() for task in module.tasks],
+            )
+
     def get_tasks_by_owner(self, owner: str) -> List[Dict[str, object]]:
         with self._lock:
             return [task.to_record() for task in self._state.get_tasks_by_owner(owner)]
+
+    def get_tasks_by_module(self, module_name: str) -> List[Dict[str, object]]:
+        with self._lock:
+            return [task.to_record() for task in self._state.get_tasks_by_module(module_name)]
 
     def validate_contract_structure(self) -> List[str]:
         with self._lock:

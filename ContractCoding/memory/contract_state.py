@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, field
+import os
 import re
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 STATUS_VALUES = {"TODO", "IN_PROGRESS", "ERROR", "DONE", "VERIFIED"}
+TERMINAL_STATUS_VALUES = {"DONE", "VERIFIED"}
+EXECUTION_MODE_VALUES = {"single", "serial", "parallel", "team"}
 
 SECTION_SPECS = [
     {
@@ -97,12 +99,74 @@ def canonicalize_section_key(raw_key: str) -> Optional[str]:
     return aliases.get(normalized)
 
 
+def normalize_execution_mode(raw_value: str | None) -> Optional[str]:
+    if raw_value is None:
+        return None
+    normalized = str(raw_value).strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"serial", "single"}:
+        return "single"
+    if normalized in {"parallel", "team"}:
+        return "parallel"
+    return normalized if normalized in EXECUTION_MODE_VALUES else None
+
+
 def _strip_empty_edges(lines: List[str]) -> List[str]:
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
     return lines
+
+
+def _dedupe_preserve_order(items: Sequence[str]) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for item in items:
+        cleaned = str(item).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        ordered.append(cleaned)
+    return ordered
+
+
+def _split_dependency_tokens(raw_value: str) -> List[str]:
+    if not raw_value:
+        return []
+
+    candidates = re.findall(r"`([^`]+)`", raw_value)
+    if not candidates:
+        candidates = re.split(r",|;|\||->|=>|\n", raw_value)
+
+    normalized: List[str] = []
+    for candidate in candidates:
+        token = str(candidate).strip().strip("-").strip()
+        if not token:
+            continue
+        token = token.replace("\\", "/")
+        token = re.sub(r"\s+", " ", token).strip()
+        normalized.append(token)
+    return _dedupe_preserve_order(normalized)
+
+
+def _default_module_name(file_path: str) -> str:
+    normalized = str(file_path).strip().replace("\\", "/")
+    parent = os.path.dirname(normalized).replace("\\", "/").strip("./")
+    if parent:
+        return parent
+
+    stem, _ = os.path.splitext(os.path.basename(normalized))
+    if "_" in stem:
+        return stem.split("_", 1)[0]
+    if "-" in stem:
+        return stem.split("-", 1)[0]
+    return stem or normalized
+
+
+def _normalize_dependency_reference(reference: str) -> str:
+    return str(reference).strip().replace("\\", "/")
 
 
 @dataclass
@@ -112,6 +176,9 @@ class TaskBlock:
     owner: str = "Unknown"
     status: str = "TODO"
     version: Optional[int] = None
+    module: str = ""
+    depends_on: List[str] = field(default_factory=list)
+    execution_mode: Optional[str] = None
 
     @classmethod
     def from_lines(cls, lines: Iterable[str]) -> "TaskBlock":
@@ -120,11 +187,15 @@ class TaskBlock:
         owner = "Unknown"
         status = "TODO"
         version: Optional[int] = None
+        module = ""
+        depends_on: List[str] = []
+        execution_mode: Optional[str] = None
 
         for line in block_lines:
-            file_match = FILE_LINE_RE.match(line.strip())
+            stripped = line.strip()
+            file_match = FILE_LINE_RE.match(stripped)
             if file_match:
-                file_path = file_match.group(1).strip()
+                file_path = file_match.group(1).strip().replace("\\", "/")
                 continue
 
             owner_match = re.search(r"\*\*Owner(?::)?\*\*[: ]+(.+)", line)
@@ -141,8 +212,32 @@ class TaskBlock:
             version_match = re.search(r"\*\*Version(?::)?\*\*[: ]+(\d+)", line)
             if version_match:
                 version = int(version_match.group(1))
+                continue
 
-        return cls(file=file_path, lines=block_lines, owner=owner, status=status, version=version)
+            module_match = re.search(r"\*\*Module(?:\s*Cell)?(?::)?\*\*[: ]+(.+)", line)
+            if module_match:
+                module = module_match.group(1).strip()
+                continue
+
+            depends_match = re.search(r"\*\*(?:Depends On|Dependencies)(?::)?\*\*[: ]+(.+)", line)
+            if depends_match:
+                depends_on = _split_dependency_tokens(depends_match.group(1))
+                continue
+
+            execution_match = re.search(r"\*\*(?:Execution(?: Mode)?|Cell Mode)(?::)?\*\*[: ]+(.+)", line)
+            if execution_match:
+                execution_mode = normalize_execution_mode(execution_match.group(1))
+
+        return cls(
+            file=file_path,
+            lines=block_lines,
+            owner=owner,
+            status=status,
+            version=version,
+            module=module,
+            depends_on=depends_on,
+            execution_mode=execution_mode,
+        )
 
     def copy(self) -> "TaskBlock":
         return TaskBlock(
@@ -151,6 +246,9 @@ class TaskBlock:
             owner=self.owner,
             status=self.status,
             version=self.version,
+            module=self.module,
+            depends_on=list(self.depends_on),
+            execution_mode=self.execution_mode,
         )
 
     def render(self) -> str:
@@ -176,6 +274,20 @@ class TaskBlock:
     def set_version(self, version: int) -> None:
         self.version = version
         self._update_field("Version", str(version))
+
+    def set_module(self, module: str) -> None:
+        self.module = module.strip()
+        self._update_field("Module", self.module)
+
+    def set_depends_on(self, depends_on: Iterable[str]) -> None:
+        self.depends_on = _dedupe_preserve_order(_normalize_dependency_reference(dep) for dep in depends_on)
+        self._update_field("Depends On", ", ".join(self.depends_on))
+
+    def set_execution_mode(self, execution_mode: str) -> None:
+        normalized = normalize_execution_mode(execution_mode)
+        self.execution_mode = normalized
+        if normalized:
+            self._update_field("Execution", normalized)
 
     def append_issues(self, issues: Iterable[str]) -> None:
         cleaned = [issue.strip() for issue in issues if issue and issue.strip()]
@@ -204,6 +316,9 @@ class TaskBlock:
             "owner": self.owner,
             "status": self.status,
             "version": self.version,
+            "module": self.module or _default_module_name(self.file),
+            "depends_on": list(self.depends_on),
+            "execution_mode": self.execution_mode,
             "block": self.render(),
         }
 
@@ -236,6 +351,39 @@ def _split_symbolic_body(body_text: str) -> Tuple[List[str], List[str], Dict[str
             preamble.append(line)
     flush()
     return _strip_empty_edges(preamble), order, blocks
+
+
+@dataclass
+class ModuleCell:
+    name: str
+    files: List[str] = field(default_factory=list)
+    owners: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    execution_mode: str = "single"
+    tasks: List[TaskBlock] = field(default_factory=list)
+
+    def aggregate_status(self) -> str:
+        statuses = [task.status for task in self.tasks]
+        if statuses and all(status == "VERIFIED" for status in statuses):
+            return "VERIFIED"
+        if statuses and all(status in TERMINAL_STATUS_VALUES for status in statuses):
+            return "DONE"
+        if any(status == "ERROR" for status in statuses):
+            return "ERROR"
+        if any(status == "IN_PROGRESS" for status in statuses):
+            return "IN_PROGRESS"
+        return "TODO"
+
+    def to_record(self) -> Dict[str, object]:
+        return {
+            "module": self.name,
+            "files": list(self.files),
+            "owners": list(self.owners),
+            "dependencies": list(self.dependencies),
+            "execution_mode": self.execution_mode,
+            "status": self.aggregate_status(),
+            "tasks": [task.to_record() for task in self.tasks],
+        }
 
 
 @dataclass
@@ -309,7 +457,7 @@ class ContractState:
             parts: List[str] = []
             if self.symbolic_preamble.strip():
                 parts.append(self.symbolic_preamble.strip("\n"))
-            for index, file_path in enumerate(self.task_order):
+            for file_path in self.task_order:
                 task = self.tasks.get(file_path)
                 if not task:
                     continue
@@ -379,12 +527,78 @@ class ContractState:
     def get_tasks_by_owner(self, owner: str) -> List[TaskBlock]:
         return [task.copy() for task in self.tasks.values() if task.owner == owner]
 
+    def get_tasks_by_module(self, module_name: str) -> List[TaskBlock]:
+        normalized = str(module_name).strip()
+        return [
+            task.copy()
+            for task in self.tasks.values()
+            if (task.module or _default_module_name(task.file)) == normalized
+        ]
+
+    def list_modules(self) -> List[Dict[str, object]]:
+        return [cell.to_record() for cell in self.build_module_cells()]
+
+    def get_module(self, module_name: str) -> Optional[ModuleCell]:
+        normalized = str(module_name).strip()
+        for cell in self.build_module_cells():
+            if cell.name == normalized:
+                return cell
+        return None
+
+    def build_module_cells(self) -> List[ModuleCell]:
+        module_cells: Dict[str, ModuleCell] = {}
+        file_to_module: Dict[str, str] = {}
+
+        for file_path in self.task_order:
+            task = self.tasks.get(file_path)
+            if not task:
+                continue
+            module_name = task.module.strip() if task.module else _default_module_name(file_path)
+            file_to_module[file_path] = module_name
+            cell = module_cells.setdefault(module_name, ModuleCell(name=module_name))
+            cell.files.append(file_path)
+            cell.tasks.append(task.copy())
+
+        ordered_module_names: List[str] = []
+        seen = set()
+        for file_path in self.task_order:
+            module_name = file_to_module.get(file_path)
+            if module_name and module_name not in seen:
+                seen.add(module_name)
+                ordered_module_names.append(module_name)
+
+        for module_name in ordered_module_names:
+            cell = module_cells[module_name]
+            owners = sorted({task.owner for task in cell.tasks if task.owner != "Unknown"})
+            cell.owners = owners or ["Unknown"]
+
+            explicit_modes = [mode for mode in (normalize_execution_mode(task.execution_mode) for task in cell.tasks) if mode]
+            if explicit_modes:
+                cell.execution_mode = "single" if "single" in explicit_modes else "parallel"
+            else:
+                cell.execution_mode = "parallel" if len(cell.owners) > 1 or len(cell.files) > 1 else "single"
+
+            dependencies: List[str] = []
+            seen_dependencies = set()
+            for task in cell.tasks:
+                for dependency in task.depends_on:
+                    normalized_dependency = _normalize_dependency_reference(dependency)
+                    mapped_dependency = file_to_module.get(normalized_dependency, normalized_dependency)
+                    if mapped_dependency == module_name or mapped_dependency in seen_dependencies:
+                        continue
+                    seen_dependencies.add(mapped_dependency)
+                    dependencies.append(mapped_dependency)
+            cell.dependencies = dependencies
+
+        return [module_cells[module_name] for module_name in ordered_module_names]
+
     def record_task_failure(self, file_path: str, issues: Iterable[str], owner: Optional[str] = None) -> None:
         task = self.tasks.get(file_path)
         if task is None:
             lines = [
                 f"**File:** `{file_path}`",
                 f"*   **Owner:** {owner or 'Unknown'}",
+                f"*   **Module:** {_default_module_name(file_path)}",
                 "*   **Version:** 1",
                 "*   **Status:** ERROR",
             ]
@@ -392,6 +606,8 @@ class ContractState:
             self.upsert_task(task)
         if owner and task.owner == "Unknown":
             task.set_owner(owner)
+        if not task.module:
+            task.set_module(_default_module_name(file_path))
         if task.version is None:
             task.set_version(1)
         task.set_status("ERROR")

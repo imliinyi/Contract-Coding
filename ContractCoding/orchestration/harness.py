@@ -25,6 +25,8 @@ PLACEHOLDER_PATTERNS = (
 class TaskSpec:
     agent_name: str
     target_file: Optional[str]
+    module_name: Optional[str] = None
+    target_files: Set[str] = field(default_factory=set)
     owned_files: Set[str] = field(default_factory=set)
 
 
@@ -44,16 +46,65 @@ class TaskHarness:
         self.workspace_dir = os.path.abspath(config.WORKSPACE_DIR)
         self.logger = get_logger(config.LOG_PATH)
 
+    @staticmethod
+    def _extract_target_files(sub_task: str) -> List[str]:
+        if not sub_task:
+            return []
+
+        targets: List[str] = []
+        seen = set()
+
+        primary_match = re.search(r"Primary target file:\s*`?([^\s`]+)`?", sub_task, re.IGNORECASE)
+        if primary_match:
+            target = primary_match.group(1).strip()
+            seen.add(target)
+            targets.append(target)
+
+        line_patterns = [
+            re.compile(r"^\s*-\s*`([^`]+)`", re.MULTILINE),
+            re.compile(r"\b(?:Implement/Fix|Fix|Continue implementation of)\s+([^\s]+\.[A-Za-z0-9_]+)\b"),
+        ]
+        for pattern in line_patterns:
+            for match in pattern.finditer(sub_task):
+                target = match.group(1).strip()
+                if target in seen:
+                    continue
+                seen.add(target)
+                targets.append(target)
+        return targets
+
     def build_spec(self, agent_name: str, state: GeneralState) -> TaskSpec:
-        target_file = None
+        module_name = None
         if state.sub_task:
-            match = re.search(r"\b(?:Implement/Fix|Fix|Continue implementation of)\s+([^\s]+\.[A-Za-z0-9_]+)\b", state.sub_task)
-            if match:
-                target_file = match.group(1).strip()
+            module_match = re.search(r"Module Cell:\s*(.+)", state.sub_task)
+            if module_match:
+                module_name = module_match.group(1).strip()
+
+        extracted_target_files = self._extract_target_files(state.sub_task or "")
+        target_file = extracted_target_files[0] if extracted_target_files else None
+        target_files = set(extracted_target_files)
+
         owned_files = {task["file"] for task in self.document_manager.get_tasks_by_owner(agent_name)}
-        if target_file:
-            owned_files.add(target_file)
-        return TaskSpec(agent_name=agent_name, target_file=target_file, owned_files=owned_files)
+        if module_name:
+            module_tasks = self.document_manager.get_tasks_by_module(module_name)
+            module_owned_files = {
+                task["file"]
+                for task in module_tasks
+                if task.get("owner") == agent_name
+            }
+            if module_owned_files:
+                owned_files = module_owned_files
+
+        if target_files:
+            owned_files.update(target_files)
+
+        return TaskSpec(
+            agent_name=agent_name,
+            target_file=target_file,
+            module_name=module_name,
+            target_files=target_files,
+            owned_files=owned_files,
+        )
 
     def _snapshot(self) -> dict[str, int]:
         snapshot: dict[str, int] = {}
