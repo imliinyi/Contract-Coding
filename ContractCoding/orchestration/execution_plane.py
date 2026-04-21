@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 from threading import RLock
 from typing import Dict, Optional, Set
 from uuid import uuid4
@@ -45,6 +46,7 @@ class ExecutionPlane:
     isolated: bool = False
     repo_root: Optional[str] = None
     baseline_hashes: Dict[str, Optional[str]] | None = None
+    baseline_dir: Optional[str] = None
 
 
 class ExecutionPlanePromotionError(RuntimeError):
@@ -82,39 +84,42 @@ class ExecutionPlaneManager:
                 root_dir=self.base_workspace_dir,
                 isolated=False,
                 baseline_hashes=baseline_hashes,
+                baseline_dir=None,
             )
 
+        baseline_dir = self._create_baseline_snapshot(normalized_module)
+
         if requested_mode == "worktree":
-            plane = self._create_worktree_plane(normalized_module, baseline_hashes)
+            plane = self._create_worktree_plane(normalized_module, baseline_hashes, baseline_dir)
             if plane:
                 return plane
             if not self.config.FALLBACK_TO_SANDBOX:
+                shutil.rmtree(baseline_dir, ignore_errors=True)
                 raise RuntimeError("Unable to create git worktree execution plane and sandbox fallback is disabled.")
 
-        return self._create_sandbox_plane(normalized_module, baseline_hashes)
+        return self._create_sandbox_plane(normalized_module, baseline_hashes, baseline_dir)
 
     def promote(self, plane: ExecutionPlane, changed_files: Set[str]) -> Set[str]:
         if not plane.isolated:
             return set(changed_files)
 
         with self._promotion_lock:
-            conflicts = self._detect_promotion_conflicts(plane, changed_files)
-            if conflicts:
-                raise ExecutionPlanePromotionError(
-                    "Execution plane promotion rejected due to newer base workspace changes: "
-                    + ", ".join(conflicts)
-                )
-
             promoted: Set[str] = set()
             for rel_path in sorted(changed_files):
                 if not rel_path or rel_path == ".":
                     continue
                 src = os.path.join(plane.working_dir, rel_path)
                 dest = os.path.join(self.base_workspace_dir, rel_path)
-                if not os.path.exists(src):
-                    continue
+                baseline = os.path.join(plane.baseline_dir, rel_path) if plane.baseline_dir else None
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                shutil.copy2(src, dest)
+
+                baseline_hash = (plane.baseline_hashes or {}).get(rel_path)
+                current_hash = self._hash_file(dest)
+                if current_hash == baseline_hash:
+                    if os.path.exists(src):
+                        shutil.copy2(src, dest)
+                else:
+                    self._merge_changed_file(src=src, baseline=baseline, dest=dest, rel_path=rel_path)
                 promoted.add(rel_path)
             return promoted
 
@@ -130,8 +135,10 @@ class ExecutionPlaneManager:
                     capture_output=True,
                     text=True,
                 )
-            else:
+            elif plane.isolated:
                 shutil.rmtree(plane.root_dir, ignore_errors=True)
+            if plane.baseline_dir and os.path.exists(plane.baseline_dir):
+                shutil.rmtree(plane.baseline_dir, ignore_errors=True)
         except Exception as exc:
             self.logger.warning("Execution plane cleanup failed for %s: %s", plane.root_dir, exc)
 
@@ -139,6 +146,7 @@ class ExecutionPlaneManager:
         self,
         module_name: str,
         baseline_hashes: Dict[str, Optional[str]],
+        baseline_dir: str,
     ) -> ExecutionPlane:
         sandbox_root = os.path.join(self.runtime_root, "sandboxes")
         os.makedirs(sandbox_root, exist_ok=True)
@@ -157,12 +165,14 @@ class ExecutionPlaneManager:
             root_dir=plane_root,
             isolated=True,
             baseline_hashes=dict(baseline_hashes),
+            baseline_dir=baseline_dir,
         )
 
     def _create_worktree_plane(
         self,
         module_name: str,
         baseline_hashes: Dict[str, Optional[str]],
+        baseline_dir: str,
     ) -> Optional[ExecutionPlane]:
         git_info = self._get_git_workspace_info()
         if git_info is None:
@@ -195,6 +205,7 @@ class ExecutionPlaneManager:
             isolated=True,
             repo_root=repo_root,
             baseline_hashes=dict(baseline_hashes),
+            baseline_dir=baseline_dir,
         )
 
     def _get_git_workspace_info(self) -> Optional[tuple[str, str]]:
@@ -261,18 +272,72 @@ class ExecutionPlaneManager:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(src, dest)
 
-    def _detect_promotion_conflicts(
-        self,
-        plane: ExecutionPlane,
-        changed_files: Set[str],
-    ) -> list[str]:
-        baseline_hashes = plane.baseline_hashes or {}
-        conflicts: list[str] = []
-        for rel_path in sorted(changed_files):
-            if not rel_path or rel_path == ".":
-                continue
-            baseline_hash = baseline_hashes.get(rel_path)
-            current_hash = self._hash_file(os.path.join(self.base_workspace_dir, rel_path))
-            if current_hash != baseline_hash:
-                conflicts.append(rel_path)
-        return conflicts
+    def _create_baseline_snapshot(self, module_name: str) -> str:
+        baseline_root = os.path.join(self.runtime_root, "baselines")
+        os.makedirs(baseline_root, exist_ok=True)
+        snapshot_dir = os.path.join(baseline_root, f"{module_name}-{uuid4().hex[:8]}")
+        shutil.copytree(
+            self.base_workspace_dir,
+            snapshot_dir,
+            ignore=shutil.ignore_patterns(*IGNORE_NAMES),
+        )
+        return snapshot_dir
+
+    def _merge_changed_file(self, src: str, baseline: Optional[str], dest: str, rel_path: str) -> None:
+        if not os.path.exists(src):
+            raise ExecutionPlanePromotionError(
+                f"Execution plane promotion cannot merge deleted or missing file '{rel_path}' safely."
+            )
+
+        if not baseline or not os.path.exists(baseline):
+            raise ExecutionPlanePromotionError(
+                f"Execution plane promotion cannot auto-merge new file '{rel_path}' because the base workspace changed."
+            )
+
+        if self._looks_binary(src) or self._looks_binary(dest) or self._looks_binary(baseline):
+            raise ExecutionPlanePromotionError(
+                f"Execution plane promotion cannot auto-merge binary or non-text file '{rel_path}'."
+            )
+
+        merged_content = self._run_git_merge_file(current=dest, base=baseline, incoming=src, rel_path=rel_path)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as handle:
+            handle.write(merged_content)
+
+    def _looks_binary(self, file_path: str) -> bool:
+        if not os.path.exists(file_path):
+            return False
+        try:
+            with open(file_path, "rb") as handle:
+                chunk = handle.read(4096)
+            if b"\x00" in chunk:
+                return True
+            chunk.decode("utf-8")
+            return False
+        except UnicodeDecodeError:
+            return True
+
+    def _run_git_merge_file(self, current: str, base: str, incoming: str, rel_path: str) -> str:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current_tmp = os.path.join(tmpdir, "current")
+            base_tmp = os.path.join(tmpdir, "base")
+            incoming_tmp = os.path.join(tmpdir, "incoming")
+            shutil.copy2(current, current_tmp)
+            shutil.copy2(base, base_tmp)
+            shutil.copy2(incoming, incoming_tmp)
+
+            result = subprocess.run(
+                ["git", "merge-file", "-p", current_tmp, base_tmp, incoming_tmp],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode == 0:
+                return result.stdout
+            if result.returncode == 1:
+                raise ExecutionPlanePromotionError(
+                    f"Execution plane promotion hit merge conflicts for '{rel_path}'."
+                )
+            raise ExecutionPlanePromotionError(
+                f"Execution plane promotion could not merge '{rel_path}': {result.stderr.strip() or result.stdout.strip()}"
+            )

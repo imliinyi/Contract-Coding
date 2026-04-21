@@ -438,6 +438,31 @@ class ContractCodingRefactorTests(unittest.TestCase):
             finally:
                 manager.cleanup(plane)
 
+    def test_execution_plane_promotion_auto_merges_non_overlapping_text_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "app.py"), "w", encoding="utf-8") as handle:
+                handle.write("line1\nline2\nline3\n")
+
+            config = Config(
+                WORKSPACE_DIR=tmpdir,
+                LOG_PATH=os.path.join(tmpdir, "agent.log"),
+                EXECUTION_PLANE="sandbox",
+            )
+            manager = ExecutionPlaneManager(config)
+            plane = manager.acquire("core/runtime", isolated=True)
+            try:
+                with open(os.path.join(plane.working_dir, "app.py"), "w", encoding="utf-8") as handle:
+                    handle.write("line1-agent\nline2\nline3\n")
+                with open(os.path.join(tmpdir, "app.py"), "w", encoding="utf-8") as handle:
+                    handle.write("line1\nline2\nline3-user\n")
+
+                promoted = manager.promote(plane, {"app.py"})
+                self.assertEqual(promoted, {"app.py"})
+                with open(os.path.join(tmpdir, "app.py"), "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), "line1-agent\nline2\nline3-user\n")
+            finally:
+                manager.cleanup(plane)
+
     def test_worktree_plane_inherits_dirty_workspace_snapshot(self):
         with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as runtime_dir:
             subprocess.run(["git", "-C", repo_dir, "init"], check=True, capture_output=True, text=True)
