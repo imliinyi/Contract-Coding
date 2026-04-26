@@ -32,14 +32,14 @@ $env:CODEX_CLI_COMMAND = '"C:\\path\\to\\codex.exe" exec --sandbox read-only --a
 
 For implementation tasks, Codex CLI should return the full file content like this:
 
-```text
+````text
 <file_write path="service.py">
 ```python
 def run() -> bool:
     return True
 ```
 </file_write>
-```
+````
 
 The framework only materializes the file that the scheduler asked the current implementation agent to work on. If Codex CLI returns another path, that path is ignored. If no matching `<file_write>` block is found, the agent retries with a stricter instruction.
 
