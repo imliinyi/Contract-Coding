@@ -157,14 +157,14 @@ class LLMAgent(BaseAgent):
         if matches:
             return None
 
-        fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\s*\n(.*?)\n```", response_text, re.DOTALL)
+        fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\s*\n(.*?)\n\s*```", response_text, re.DOTALL)
         if len(fenced_blocks) == 1:
             return fenced_blocks[0].strip()
         return None
 
     @staticmethod
     def _strip_code_fence(content: str) -> str:
-        fence = re.match(r"^```[A-Za-z0-9_+.-]*\s*\n(.*?)\n```$", content, re.DOTALL)
+        fence = re.match(r"^```[A-Za-z0-9_+.-]*\s*\n(.*?)\n\s*```$", content, re.DOTALL)
         if fence:
             return fence.group(1).strip()
         return content.strip()
