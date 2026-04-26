@@ -183,7 +183,7 @@ def _parse_symbols(block: str) -> tuple[list[ContractClass], list[ContractFuncti
 
         class_match = re.search(r"\*\*Class(?::)?\*\*\s*:??\s*`?([A-Za-z_]\w*)`?", line, re.IGNORECASE)
         if not class_match:
-            class_match = re.search(r"Class Name\s*[\"`]?([A-Za-z_]\w*)[\"`]?")
+            class_match = re.search(r"Class Name\s*[\"`]?([A-Za-z_]\w*)[\"`]?", line)
         if class_match:
             current_class = ContractClass(name=class_match.group(1))
             classes.append(current_class)
