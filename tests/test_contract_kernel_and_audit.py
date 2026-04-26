@@ -12,6 +12,10 @@ langgraph_graph_module.END = "__end__"
 sys.modules.setdefault("langgraph", langgraph_module)
 sys.modules.setdefault("langgraph.graph", langgraph_graph_module)
 
+openai_module = types.ModuleType("openai")
+openai_module.OpenAI = object
+sys.modules.setdefault("openai", openai_module)
+
 from ContractCoding.memory.audit import audit_contract_interfaces
 from ContractCoding.memory.contract import ContractParseError, parse_contract_kernel
 from ContractCoding.memory.document import DocumentManager
