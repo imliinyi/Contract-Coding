@@ -10,8 +10,8 @@ from ContractCoding.memory.audit import audit_contract_interfaces, audit_file_ex
 from ContractCoding.memory.contract import ContractParseError
 from ContractCoding.memory.document import DocumentManager
 from ContractCoding.memory.processor import MemoryProcessor
-from ContractCoding.orchestration.engine import GraphTraverser
 from ContractCoding.orchestration.runner import AgentRunner
+from ContractCoding.orchestration.traverser import GraphTraverser
 from ContractCoding.utils.log import get_logger
 from ContractCoding.utils.state import GeneralState
 
