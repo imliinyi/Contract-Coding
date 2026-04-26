@@ -39,6 +39,12 @@ class BaseAgent(ABC):
                 api_base=self.config.OPENAI_API_BASE_URL,
                 max_tokens=self.config.OPENAI_API_MAX_TOKENS,
                 temperature=self.config.OPENAI_API_TEMPERATURE,
+                backend=getattr(self.config, "MODEL_BACKEND", "openai"),
+                codex_cli_command=getattr(self.config, "CODEX_CLI_COMMAND", "codex exec --sandbox read-only --ask-for-approval never -"),
+                codex_cli_workdir=getattr(self.config, "CODEX_CLI_WORKDIR", "."),
+                codex_cli_timeout=getattr(self.config, "CODEX_CLI_TIMEOUT", 300),
+                codex_cli_max_output_chars=getattr(self.config, "CODEX_CLI_MAX_OUTPUT_CHARS", 200000),
+                codex_cli_read_only=getattr(self.config, "CODEX_CLI_READ_ONLY", True),
             )
             self._llm_local.llm = llm
         return llm
