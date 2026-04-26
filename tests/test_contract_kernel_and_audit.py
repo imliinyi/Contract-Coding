@@ -95,7 +95,7 @@ class ContractKernelTests(unittest.TestCase):
 class AuditTests(unittest.TestCase):
     def test_ast_audit_detects_signature_mismatch_and_placeholder(self):
         kernel = parse_contract_kernel(CONTRACT)
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
             with open(os.path.join(tmp, "models.py"), "w", encoding="utf-8") as f:
                 f.write("class Player:\n    def move(self, direction: str) -> None:\n        pass\n")
             with open(os.path.join(tmp, "service.py"), "w", encoding="utf-8") as f:
