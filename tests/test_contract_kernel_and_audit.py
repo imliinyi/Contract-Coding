@@ -1,8 +1,16 @@
 import os
+import sys
 import tempfile
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+langgraph_module = types.ModuleType("langgraph")
+langgraph_graph_module = types.ModuleType("langgraph.graph")
+langgraph_graph_module.END = "__end__"
+sys.modules.setdefault("langgraph", langgraph_module)
+sys.modules.setdefault("langgraph.graph", langgraph_graph_module)
 
 from ContractCoding.memory.audit import audit_contract_interfaces
 from ContractCoding.memory.contract import ContractParseError, parse_contract_kernel
