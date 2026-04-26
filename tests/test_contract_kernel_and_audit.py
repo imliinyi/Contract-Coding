@@ -8,9 +8,12 @@ from unittest.mock import Mock
 
 langgraph_module = types.ModuleType("langgraph")
 langgraph_graph_module = types.ModuleType("langgraph.graph")
+langgraph_constants_module = types.ModuleType("langgraph.constants")
 langgraph_graph_module.END = "__end__"
+langgraph_constants_module.END = "__end__"
 sys.modules.setdefault("langgraph", langgraph_module)
 sys.modules.setdefault("langgraph.graph", langgraph_graph_module)
+sys.modules.setdefault("langgraph.constants", langgraph_constants_module)
 
 openai_module = types.ModuleType("openai")
 openai_module.OpenAI = object
