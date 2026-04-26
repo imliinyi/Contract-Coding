@@ -1,6 +1,6 @@
 import os
+import shutil
 import sys
-import tempfile
 import types
 import unittest
 from types import SimpleNamespace
@@ -95,7 +95,10 @@ class ContractKernelTests(unittest.TestCase):
 class AuditTests(unittest.TestCase):
     def test_ast_audit_detects_signature_mismatch_and_placeholder(self):
         kernel = parse_contract_kernel(CONTRACT)
-        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
+        tmp = os.path.join(os.getcwd(), "audit_test_workspace")
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, exist_ok=True)
+        try:
             with open(os.path.join(tmp, "models.py"), "w", encoding="utf-8") as f:
                 f.write("class Player:\n    def move(self, direction: str) -> None:\n        pass\n")
             with open(os.path.join(tmp, "service.py"), "w", encoding="utf-8") as f:
@@ -104,6 +107,8 @@ class AuditTests(unittest.TestCase):
                 f.write("def main() -> None:\n    return None\n")
 
             issues = audit_contract_interfaces(kernel, tmp)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
         kinds = {issue.kind for issue in issues}
         self.assertIn("parameter_mismatch", kinds)
