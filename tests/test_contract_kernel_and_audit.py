@@ -98,7 +98,7 @@ class AuditTests(unittest.TestCase):
 class DependencySchedulingTests(unittest.TestCase):
     def test_dependency_blocks_unverified_downstream_task(self):
         doc = DocumentManager()
-        doc.execute_actions([{"type": "add", "content": CONTRACT.replace("* **Status:** VERIFIED", "* **Status:** TODO", 1)}])
+        doc._document = CONTRACT.replace("* **Status:** VERIFIED", "* **Status:** TODO", 1)
         config = SimpleNamespace(MAX_LAYERS=3, MAX_WORKERS=2, TERMINATION_POLICY="all", WORKSPACE_DIR=".", LOG_PATH="./test.log")
         traverser = GraphTraverser(config, Mock(), Mock(), doc)
         state = GeneralState(task="demo")
