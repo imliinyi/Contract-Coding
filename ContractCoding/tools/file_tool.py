@@ -1,9 +1,10 @@
 import ast
-import codecs
+import json
 import os
+import re
 from typing import Callable, List
 
-from ContractCoding.orchestration.workspace_context import get_current_workspace
+from ContractCoding.execution.workspace import get_current_workspace
 from ContractCoding.tools.artifacts import ArtifactMetadataStore
 
 
@@ -124,17 +125,32 @@ class WorkspaceFS:
     def write_file(self, path: str, content: str) -> str:
         try:
             full_path = self.resolve(path)
-            if ".md" in path:
-                return "Error: Don't write markdown files directly. Use a code editor instead."
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            content = content.replace('"', '\\"')
-            content = codecs.decode(content, "unicode_escape")
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
             version = self.metadata_store.bump_version(full_path)
             return f"File successfully written to {path} (artifact version {version})"
         except Exception as e:
             return f"An error occurred while writing to the file: {str(e)}"
+
+    def replace_file(self, path: str, content: str) -> str:
+        return self.write_file(path, content)
+
+    def create_file(self, path: str, content: str) -> str:
+        try:
+            full_path = self.resolve(path)
+            if os.path.exists(full_path):
+                return (
+                    f"Error: File already exists at path: {path}. Use replace_file/write_file for whole-file "
+                    "replacement, or update_file_lines/replace_symbol for localized edits."
+                )
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            version = self.metadata_store.bump_version(full_path)
+            return f"File successfully created at {path} (artifact version {version})"
+        except Exception as e:
+            return f"An error occurred while creating the file: {str(e)}"
 
     def list_directory(self, path: str) -> List[str] | str:
         try:
@@ -188,7 +204,7 @@ class WorkspaceFS:
             full_path = self.resolve(path)
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-            insert_text = codecs.decode((content or "").replace('"', '\\"'), "unicode_escape")
+            insert_text = content or ""
             if insert_text and not insert_text.endswith(("\n", "\r", "\r\n")):
                 insert_text += "\n"
 
@@ -217,6 +233,36 @@ class WorkspaceFS:
             return str(e)
         except Exception as e:
             return f"An unexpected error occurred: {str(e)}"
+
+    def search_text(self, pattern: str, path: str = ".", max_results: int = 50) -> str:
+        try:
+            root = self.resolve(path or ".")
+            regex = re.compile(pattern)
+            results: List[str] = []
+            if os.path.isfile(root):
+                candidates = [root]
+            else:
+                candidates = []
+                for dirpath, dirs, files in os.walk(root):
+                    dirs[:] = [name for name in dirs if name not in {".git", "__pycache__", "node_modules", ".venv"} and not name.startswith(".")]
+                    for file_name in files:
+                        if file_name.startswith("."):
+                            continue
+                        candidates.append(os.path.join(dirpath, file_name))
+            for candidate in candidates:
+                try:
+                    with open(candidate, "r", encoding="utf-8") as handle:
+                        for line_no, line in enumerate(handle, start=1):
+                            if regex.search(line):
+                                rel = os.path.relpath(candidate, self.workspace_dir).replace("\\", "/")
+                                results.append(f"{rel}:{line_no}: {line.rstrip()}")
+                                if len(results) >= max(1, int(max_results or 50)):
+                                    return "\n".join(results)
+                except (UnicodeDecodeError, OSError):
+                    continue
+            return "\n".join(results) if results else "No matches."
+        except Exception as e:
+            return f"An error occurred while searching text: {str(e)}"
 
     def code_outline(self, file_path: str) -> str:
         if file_path.endswith(".py"):
@@ -273,6 +319,59 @@ class WorkspaceFS:
             return f"Error: File not found at path '{file_path}'"
         except Exception as e:
             return f"Error: {str(e)}"
+
+    def inspect_symbol(self, file_path: str, symbol: str, context_lines: int = 8) -> str:
+        try:
+            full_path = self.resolve(file_path)
+            with open(full_path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            node = self._find_python_symbol(full_path, symbol)
+            if node is None:
+                return f"Error: Symbol '{symbol}' not found in {file_path}."
+            start = max(1, int(getattr(node, "lineno", 1)) - max(0, int(context_lines or 0)))
+            end = min(len(lines), int(getattr(node, "end_lineno", getattr(node, "lineno", 1))) + max(0, int(context_lines or 0)))
+            return "".join(f"{idx}: {lines[idx - 1]}" for idx in range(start, end + 1))
+        except Exception as e:
+            return f"An error occurred while inspecting symbol: {str(e)}"
+
+    def replace_symbol(self, file_path: str, symbol: str, new_content: str) -> str:
+        try:
+            full_path = self.resolve(file_path)
+            node = self._find_python_symbol(full_path, symbol)
+            if node is None:
+                return f"Error: Symbol '{symbol}' not found in {file_path}."
+            with open(full_path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            start = int(getattr(node, "lineno", 1)) - 1
+            end = int(getattr(node, "end_lineno", getattr(node, "lineno", 1)))
+            replacement = (new_content or "").splitlines(keepends=True)
+            if replacement and not replacement[-1].endswith(("\n", "\r", "\r\n")):
+                replacement[-1] += "\n"
+            with open(full_path, "w", encoding="utf-8") as handle:
+                handle.writelines(lines[:start] + replacement + lines[end:])
+            version = self.metadata_store.bump_version(full_path)
+            return f"Successfully replaced symbol '{symbol}' in '{file_path}' (artifact version {version})."
+        except Exception as e:
+            return f"An error occurred while replacing symbol: {str(e)}"
+
+    def _find_python_symbol(self, full_path: str, symbol: str):
+        with open(full_path, "r", encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        parts = [part for part in str(symbol or "").split(".") if part]
+        if not parts:
+            return None
+        current_body = list(tree.body)
+        found = None
+        for part in parts:
+            found = None
+            for node in current_body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == part:
+                    found = node
+                    current_body = list(getattr(node, "body", []))
+                    break
+            if found is None:
+                return None
+        return found
 
 
 def build_file_tools(workspace_dir: str) -> List[Callable]:
@@ -337,12 +436,53 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Writes content to a file. Creates the file if it does not exist, and overwrites it if it does. Path is relative.",
+            "description": "Writes complete content to a file. Creates the file if missing and overwrites/truncates it if it exists. Path is relative.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The relative path to the file within the workspace. Will be created under workspace directory."},
                     "content": {"type": "string", "description": "The content to write to the file. Should be properly escaped for JSON."},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    }
+
+    def replace_file(path: str, content: str) -> str:
+        return get_fs().replace_file(path, content)
+
+    replace_file.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "replace_file",
+            "description": (
+                "Replaces an entire existing or missing file with complete content and truncates any old trailing "
+                "scaffold. Prefer this for new large artifacts, scaffold replacement, or after repeated line-patch failures."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative path to the file within the workspace."},
+                    "content": {"type": "string", "description": "Complete final file content."},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    }
+
+    def create_file(path: str, content: str) -> str:
+        return get_fs().create_file(path, content)
+
+    create_file.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "create_file",
+            "description": "Creates a new file under the workspace. Fails if the file already exists; use replace_file/write_file for whole-file replacement or update_file_lines/replace_symbol for localized edits.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative path to the new file."},
+                    "content": {"type": "string", "description": "Complete initial file content."},
                 },
                 "required": ["path", "content"],
             },
@@ -395,9 +535,29 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
                 "properties": {
                     "path": {"type": "string", "description": "Relative path to the file within the workspace."},
                     "line": {"type": "integer", "description": "1-indexed line number where the content will be inserted."},
-                    "content": {"type": "string", "description": "Code/content to insert; unicode-escape decoded; newline ensured."},
+                    "content": {"type": "string", "description": "Code/content to insert. A trailing newline is added if missing."},
                 },
                 "required": ["path", "line", "content"],
+            },
+        },
+    }
+
+    def search_text(pattern: str, path: str = ".", max_results: int = 50) -> str:
+        return get_fs().search_text(pattern, path=path, max_results=max_results)
+
+    search_text.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "search_text",
+            "description": "Searches text with a regular expression in a file or directory under the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Python regular expression to search for."},
+                    "path": {"type": "string", "description": "Relative file or directory path to search. Defaults to workspace root.", "default": "."},
+                    "max_results": {"type": "integer", "description": "Maximum result lines to return.", "default": 50},
+                },
+                "required": ["pattern"],
             },
         },
     }
@@ -414,4 +574,126 @@ def build_file_tools(workspace_dir: str) -> List[Callable]:
         },
     }
 
-    return [file_tree, write_file, list_directory, read_file, read_lines, code_outline]
+    def inspect_symbol(file_path: str, symbol: str, context_lines: int = 8) -> str:
+        return get_fs().inspect_symbol(file_path, symbol, context_lines=context_lines)
+
+    inspect_symbol.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "inspect_symbol",
+            "description": "Reads the full enclosing Python function/class by symbol name with nearby context lines.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Relative Python file path."},
+                    "symbol": {"type": "string", "description": "Function/class symbol, optionally dotted for methods such as ClassName.method."},
+                    "context_lines": {"type": "integer", "description": "Extra lines before and after the symbol.", "default": 8},
+                },
+                "required": ["file_path", "symbol"],
+            },
+        },
+    }
+
+    def replace_symbol(file_path: str, symbol: str, new_content: str) -> str:
+        return get_fs().replace_symbol(file_path, symbol, new_content)
+
+    replace_symbol.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "replace_symbol",
+            "description": "Replaces an entire Python function or class definition. Use this after repeated line-patch syntax failures.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Relative Python file path."},
+                    "symbol": {"type": "string", "description": "Function/class symbol, optionally dotted for methods such as ClassName.method."},
+                    "new_content": {"type": "string", "description": "Complete replacement source for the function/class including def/class line."},
+                },
+                "required": ["file_path", "symbol", "new_content"],
+            },
+        },
+    }
+
+    def report_blocker(
+        blocker_type: str,
+        required_artifacts: List[str],
+        current_allowed_artifacts: List[str],
+        reason: str,
+        suggested_owner_scope: str = "",
+    ) -> str:
+        return json.dumps(
+            {
+                "blocker_type": blocker_type,
+                "required_artifacts": list(required_artifacts or []),
+                "current_allowed_artifacts": list(current_allowed_artifacts or []),
+                "reason": reason,
+                "suggested_owner_scope": suggested_owner_scope,
+            },
+            ensure_ascii=False,
+        )
+
+    report_blocker.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "report_blocker",
+            "description": "Reports a structured blocker when the repair requires artifacts outside the allowed scope.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "blocker_type": {"type": "string", "description": "Short blocker kind such as out_of_scope_repair or missing_interface."},
+                    "required_artifacts": {"type": "array", "items": {"type": "string"}, "description": "Artifacts required to complete the work."},
+                    "current_allowed_artifacts": {"type": "array", "items": {"type": "string"}, "description": "Artifacts currently allowed by the packet."},
+                    "reason": {"type": "string", "description": "Why progress is blocked."},
+                    "suggested_owner_scope": {"type": "string", "description": "Optional likely owner scope such as core, io, interface, tests.", "default": ""},
+                },
+                "required": ["blocker_type", "required_artifacts", "current_allowed_artifacts", "reason"],
+            },
+        },
+    }
+
+    def submit_result(summary: str, changed_files: List[str] | None = None, evidence: List[str] | None = None, risks: List[str] | None = None) -> str:
+        return json.dumps(
+            {
+                "summary": summary,
+                "changed_files": list(changed_files or []),
+                "evidence": list(evidence or []),
+                "risks": list(risks or []),
+            },
+            ensure_ascii=False,
+        )
+
+    submit_result.openai_schema = {
+        "type": "function",
+        "function": {
+            "name": "submit_result",
+            "description": "Records a structured completion summary. The final assistant response should still include normal ContractCoding output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "Concise completion summary."},
+                    "changed_files": {"type": "array", "items": {"type": "string"}, "description": "Changed artifact paths."},
+                    "evidence": {"type": "array", "items": {"type": "string"}, "description": "Validation or artifact evidence."},
+                    "risks": {"type": "array", "items": {"type": "string"}, "description": "Remaining risks or empty."},
+                },
+                "required": ["summary"],
+            },
+        },
+    }
+
+    return [
+        file_tree,
+        create_file,
+        write_file,
+        replace_file,
+        update_file_lines,
+        replace_symbol,
+        add_code,
+        list_directory,
+        search_text,
+        read_file,
+        read_lines,
+        inspect_symbol,
+        code_outline,
+        report_blocker,
+        submit_result,
+    ]

@@ -115,7 +115,7 @@ sequenceDiagram
 Used for:
 
 - non-implementation roles
-- compatibility mode
+- direct workspace-plane execution
 - environments where isolation is disabled
 
 ### Sandbox

@@ -17,5 +17,5 @@ class GeneralState(BaseModel):
     role: str = Field(default="", description="The role of the agent that produced this state")
     thinking: str = Field(default="", description="The thinking process of the agent")
     output: str = Field(default="", description="The primary output of the agent")
-    task_requirements: Optional[Dict[str, str]] = Field(default=None, description="The requirements for subsequent tasks")
+    task_requirements: Optional[Dict[str, Any]] = Field(default=None, description="The requirements for subsequent tasks")
     next_agents: Optional[Union[str, List[str]]] = Field(default_factory=list, description="The next agent(s) to execute")

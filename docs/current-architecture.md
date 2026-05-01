@@ -1,105 +1,56 @@
 # Current Architecture
 
-ContractCoding currently operates as a contract-driven multi-agent orchestration system with three core layers:
-
-1. `ContractState` as the structured source of truth.
-2. `GraphTraverser` as the module-team scheduler.
-3. `TaskHarness` as the execution guardrail around every agent run.
-
-The important shift from the older version is that orchestration is no longer purely file-flat and no longer relies on raw Markdown patching as the only state model. The system now compiles the collaborative document into structured task blocks and schedules work by module team and dependency wave.
+ContractCoding is currently an OpenAI-first, contract-driven long-running runtime built around **ContractSpec V8 + Runtime V4**. The OpenAI API is the only supported LLM path.
 
 ## System Overview
 
 ```mermaid
 flowchart LR
-    U["User Task"] --> CLI["CLI: main.py"]
-    CLI --> E["Engine"]
-    E --> GT["GraphTraverser"]
-    E --> DM["DocumentManager"]
-    E --> MP["MemoryProcessor"]
-
-    DM --> CS["ContractState"]
-    CS --> CP["ModuleTeamPlan Compiler"]
-
-    GT --> AR["AgentRunner"]
-    AR --> H["TaskHarness"]
-    H --> AG["LLMAgent"]
-
-    AG --> TOOLS["File / Code / Search / Math Tools"]
-    AG --> DM
-
-    CP --> GT
-    DM --> MD["Rendered document.md"]
+    U["User Task"] --> CLI["app/cli.py"]
+    CLI --> SVC["app/service.py"]
+    SVC --> PLAN["contract/ContractCompiler"]
+    PLAN --> CONTRACT[".contractcoding/contract.json"]
+    SVC --> RUN["runtime/RunEngine"]
+    RUN --> LOOP["runtime/RunLoop"]
+    LOOP --> SCH["runtime/Scheduler"]
+    SCH --> TEAM["runtime/TeamExecutor"]
+    TEAM --> AG["agents/LLMAgent"]
+    AG --> OPENAI["llm/OpenAIBackend"]
+    OPENAI --> TOOLS["tools/* via ToolGovernor"]
+    TEAM --> GATES["runtime/GateRunner"]
+    GATES --> RECOVERY["runtime/RecoveryCoordinator"]
+    RECOVERY --> TEAM
+    GATES --> PROMOTE["runtime/TeamRuntime promotion"]
+    RUN --> STORE["runtime/RunStore"]
 ```
 
-## Scheduling Model
+## Runtime Model
 
-Each file block in `Symbolic API Specifications` now includes:
+- `ContractSpec V8` is the plan source of truth: work scopes, work items, interfaces, team gates, final gate, execution policy, and recovery guardrails.
+- `RunStore` persists runtime facts only: task/run status, contract versions, leases, team workspaces, steps, events, gates, evidence, and repair tickets.
+- `Scheduler` produces ready team waves from dependency, phase, conflict-key, lease, and parallelism policy.
+- `TeamExecutor` runs scoped work items in the active team workspace and records backend-neutral `llm_observability`.
+- `GateRunner` performs deterministic team/final checks and emits structured diagnostics.
+- `RecoveryCoordinator` owns global review/repair decisions, opens auditable repair plans, and reopens only targeted owner work.
+- `TeamRuntime` owns durable scope teams, isolated workspaces, dependency refresh, and promotion after local verification.
 
-- `File`
-- `Module`
-- `Depends On`
-- `Owner`
-- `Version`
-- `Status`
+## OpenAI-First Backend Policy
 
-These fields are parsed into `TaskBlock` and compiled into `ModuleTeamPlan`. A module team is the unit of parallelism. Inside each module, dependencies are used to compute the current ready wave.
+The default backend is `openai`. It uses native tool calls, but all tools still execute through ContractCoding's policy layer:
 
-```mermaid
-flowchart TD
-    PM["Project_Manager"] --> DOC["Contract with File / Module / Depends On / Owner / Status"]
-    DOC --> ARC["Architect contract review"]
-    ARC --> PLAN["Compile ModuleTeamPlan"]
+- `ToolGovernor` restricts writes to the work item's allowed artifacts and conflict keys.
+- `PatchGuard` can roll back invalid repair writes before they pollute the workspace.
+- Self-checks, team gates, and final gates decide completion; LLM claims are advisory.
+- API credentials are read from `API_KEY`, `BASE_URL`, and `API_VERSION` and are not logged or rendered.
 
-    PLAN --> M1["Module Team A"]
-    PLAN --> M2["Module Team B"]
-    PLAN --> M3["Module Team C"]
+Runtime control flow does not run backend-specific probes. Provider facts are recorded only through backend-neutral `llm_observability`.
 
-    M1 --> W1["Ready Wave"]
-    M2 --> W2["Ready Wave"]
-    M3 --> B["Blocked Wave"]
+## Long-Running Guarantees
 
-    W1 --> P1["Owner Packet"]
-    W2 --> P2["Owner Packet"]
+The current implementation is optimized for resumable work rather than a single endless model context:
 
-    P1 --> D1["DONE"]
-    P2 --> D2["DONE"]
-
-    D1 --> R1["Critic + Code_Reviewer"]
-    D2 --> R2["Critic + Code_Reviewer"]
-
-    R1 --> V1["VERIFIED / ERROR"]
-    R2 --> V2["VERIFIED / ERROR"]
-```
-
-## Harness Model
-
-The harness now wraps implementation agents with:
-
-- target file detection
-- module-aware ownership scope
-- placeholder rejection
-- contract status advancement checks
-- isolated execution plane support
-
-This means the scheduler decides what should run, while the harness decides whether the execution respected the contract.
-
-## Current Execution Planes
-
-The current codebase supports three execution modes:
-
-- `workspace`
-  Direct execution in the base workspace. This is the current safe default.
-- `sandbox`
-  A disposable copied workspace for implementation tasks. Validated changes are promoted back.
-- `worktree`
-  A git worktree-backed isolated execution plane when the target workspace is inside a git repository. If worktree creation fails, the runtime can fall back to `sandbox`.
-
-## Why This Matters
-
-This architecture gives the project four properties that the original version did not reliably provide:
-
-1. Parallelism with structure.
-2. Shared-state safety.
-3. Execution validation.
-4. Clear boundaries for future isolation and promotion workflows.
+1. Durable contract and run ledgers survive process restarts.
+2. Stale running items and gates are recovered before new dispatch.
+3. Parallel teams operate through scoped leases and conflict keys.
+4. Isolated workspaces can be promoted only after deterministic gates pass.
+5. Reports summarize phase, artifact coverage, team state, gate state, repair tickets, timing, and backend-neutral LLM telemetry.

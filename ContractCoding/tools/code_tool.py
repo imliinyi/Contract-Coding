@@ -2,7 +2,7 @@ import subprocess
 import sys
 from typing import Callable
 
-from ContractCoding.orchestration.workspace_context import get_current_workspace
+from ContractCoding.execution.workspace import get_current_workspace
 from ContractCoding.tools.file_tool import WorkspaceFS
 
 

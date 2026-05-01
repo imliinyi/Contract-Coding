@@ -1,9 +1,9 @@
 from typing import Any, List
 
 from ContractCoding.agents.agent import LLMAgent
-from ContractCoding.agents.specs import AgentCapability, DEFAULT_AGENT_CAPABILITIES
+from ContractCoding.agents.profile import AgentCapability, DEFAULT_AGENT_CAPABILITIES
+from ContractCoding.agents.prompts import get_agent_prompt
 from ContractCoding.config import Config
-from ContractCoding.prompts.agents_prompt import get_agent_prompt
 from ContractCoding.tools.code_tool import build_run_code
 from ContractCoding.tools.file_tool import build_file_tools
 from ContractCoding.tools.math_tool import solve_math_expression

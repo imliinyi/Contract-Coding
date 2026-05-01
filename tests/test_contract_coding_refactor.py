@@ -6,12 +6,12 @@ from unittest import mock
 
 from ContractCoding.agents.forge import AgentCapability, AgentForge
 from ContractCoding.config import Config
-from ContractCoding.memory.document import DocumentManager
-from ContractCoding.memory.processor import MemoryProcessor
-from ContractCoding.orchestration.execution_plane import ExecutionPlaneManager, ExecutionPlanePromotionError
-from ContractCoding.orchestration.harness import TaskHarness
-from ContractCoding.orchestration.workspace_context import get_current_workspace, workspace_scope
-from ContractCoding.orchestration.traverser import GraphTraverser
+from ContractCoding.contract.compiler import ContractCompiler
+from ContractCoding.runtime.store import RunStore
+from ContractCoding.runtime.scheduler import Scheduler
+from ContractCoding.execution.planes import ExecutionPlaneManager, ExecutionPlanePromotionError
+from ContractCoding.execution.harness import TaskHarness
+from ContractCoding.execution.workspace import get_current_workspace, workspace_scope
 from ContractCoding.tools.artifacts import ArtifactMetadataStore
 from ContractCoding.tools.file_tool import build_file_tools
 from ContractCoding.tools.file_tool import WorkspaceFS
@@ -19,89 +19,11 @@ from ContractCoding.utils.state import GeneralState
 import main as contract_main
 
 
-def build_contract_markdown(status: str = "TODO", tasks: list[dict] | None = None) -> str:
-    task_specs = tasks or [
-        {
-            "file": "app.py",
-            "module": "app",
-            "owner": "Backend_Engineer",
-            "version": 1,
-            "status": status,
-            "depends_on": [],
-            "class_name": "App",
-        }
-    ]
-    directory_lines = "\n".join(f"workspace/{task['file']}" for task in task_specs)
-    task_blocks = []
-    for task in task_specs:
-        dependencies = task.get("depends_on", [])
-        depends_on = ", ".join(f"`{item}`" for item in dependencies) if dependencies else "None"
-        task_blocks.append(
-            "\n".join(
-                [
-                    f"**File:** `{task['file']}`",
-                    f"*   **Module:** {task.get('module', 'root')}",
-                    f"*   **Depends On:** {depends_on}",
-                    f"*   **Class:** `{task.get('class_name', 'App')}`",
-                    f"*   **Owner:** {task.get('owner', 'Backend_Engineer')}",
-                    f"*   **Version:** {task.get('version', 1)}",
-                    f"*   **Status:** {task.get('status', status)}",
-                ]
-            )
-        )
-    task_blocks_body = "\n\n".join(task_blocks)
-
-    return f"""## Product Requirement Document (PRD)
-
-### 1.1 Project Overview
-Minimal contract
-
-### 1.2 User Stories (Features)
-*   **Feature:** Minimal
-
-### 1.3 Constraints
-*   **Tech Stack:** Python
-
-## Technical Architecture Document (System Design)
-
-### 2.1 Directory Structure
-```text
-{directory_lines}
-```
-
-### 2.2 Global Shared Knowledge
-
-### 2.3 Dependency Relationships(MUST):
-
-### 2.4 Symbolic API Specifications
-{task_blocks_body}
-
-### Status Model & Termination Guard
-- Status in one line: use `TODO/DONE/ERROR/VERIFIED`; end only when all are `VERIFIED`.
-"""
-
-
-class FakeRunner:
-    def __init__(self):
-        self.agents = {"Project_Manager": object(), "Architect": object()}
-
-    def run(self, agent_name: str, state: GeneralState, next_available_agents: list) -> GeneralState:
-        return GeneralState(
-            task=state.task,
-            sub_task=state.sub_task,
-            role=agent_name,
-            thinking=f"{agent_name}-thinking",
-            output=f"{agent_name}-output",
-            next_agents=[],
-            task_requirements={},
-        )
-
-
 class DummyImplementationAgent:
     def __init__(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
 
-    def _execute_agent(self, state, next_available_agents, document_manager, memory_processor):
+    def _execute_agent(self, state, next_available_agents, context_manager):
         target = os.path.join(get_current_workspace(self.workspace_dir), "app.py")
         with open(target, "w", encoding="utf-8") as handle:
             handle.write("def run():\n    pass\n")
@@ -120,29 +42,11 @@ class SuccessfulImplementationAgent:
     def __init__(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
 
-    def _execute_agent(self, state, next_available_agents, document_manager, memory_processor):
+    def _execute_agent(self, state, next_available_agents, context_manager):
         runtime_workspace = get_current_workspace(self.workspace_dir)
         target = os.path.join(runtime_workspace, "app.py")
         with open(target, "w", encoding="utf-8") as handle:
             handle.write("def run():\n    return 'ok'\n")
-
-        document_manager.execute_actions(
-            [
-                {
-                    "type": "update",
-                    "agent_name": "Backend_Engineer",
-                    "content": {
-                        "Symbolic API Specifications": (
-                            "**File:** `app.py`\n"
-                            "*   **Class:** `App`\n"
-                            "*   **Owner:** Backend_Engineer\n"
-                            "*   **Version:** 2\n"
-                            "*   **Status:** DONE"
-                        )
-                    },
-                }
-            ]
-        )
 
         return GeneralState(
             task=state.task,
@@ -187,6 +91,39 @@ class ContractCodingRefactorTests(unittest.TestCase):
             )
             self.assertFalse(os.path.exists(os.path.join(tmpdir, ".contractcoding", "artifacts.json")))
 
+    def test_workspace_write_file_preserves_python_escape_sequences(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = WorkspaceFS(tmpdir)
+
+            fs.write_file("engine.py", 'def render(rows):\n    return "\\n".join(rows)\n')
+
+            with open(os.path.join(tmpdir, "engine.py"), "r", encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertEqual(content, 'def render(rows):\n    return "\\n".join(rows)\n')
+
+    def test_workspace_write_file_allows_markdown_contract_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = WorkspaceFS(tmpdir)
+            store = ArtifactMetadataStore(tmpdir)
+
+            result = fs.write_file(".contractcoding/output.md", "# Memo\n\nDone.\n")
+
+            self.assertIn("artifact version", result)
+            with open(os.path.join(tmpdir, ".contractcoding", "output.md"), "r", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "# Memo\n\nDone.\n")
+            self.assertEqual(store.get_version(os.path.join(tmpdir, ".contractcoding", "output.md")), 1)
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(
+                        tmpdir,
+                        ".contractcoding",
+                        "artifacts",
+                        ".contractcoding",
+                        "output.md.json",
+                    )
+                )
+            )
+
     def test_artifact_metadata_is_stored_per_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             fs = WorkspaceFS(tmpdir)
@@ -208,138 +145,6 @@ class ContractCodingRefactorTests(unittest.TestCase):
             ):
                 contract_main.main()
 
-    def test_document_manager_rejects_cross_agent_same_target_conflict(self):
-        manager = DocumentManager()
-        manager.execute_actions(
-            [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
-        )
-
-        manager.begin_layer_aggregation(manager.get_version())
-        manager.queue_actions(
-            [
-                {
-                    "type": "update",
-                    "agent_name": "Backend_Engineer",
-                    "content": {
-                        "Symbolic API Specifications": (
-                            "**File:** `app.py`\n"
-                            "*   **Class:** `App`\n"
-                            "*   **Owner:** Backend_Engineer\n"
-                            "*   **Version:** 1\n"
-                            "*   **Status:** DONE"
-                        )
-                    },
-                },
-                {
-                    "type": "update",
-                    "agent_name": "Critic",
-                    "content": {
-                        "Symbolic API Specifications": (
-                            "**File:** `app.py`\n"
-                            "*   **Class:** `App`\n"
-                            "*   **Owner:** Backend_Engineer\n"
-                            "*   **Version:** 1\n"
-                            "*   **Status:** ERROR\n"
-                            "- wrong implementation"
-                        )
-                    },
-                },
-            ]
-        )
-        manager.commit_layer_aggregation()
-
-        task = manager.get_task("app.py")
-        self.assertIsNotNone(task)
-        self.assertEqual(task.status, "DONE")
-        self.assertEqual(len(manager.get_last_conflicts()), 1)
-
-    def test_document_manager_persists_under_workspace_contract_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manager = DocumentManager(workspace_dir=tmpdir)
-            manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
-            )
-
-            self.assertTrue(manager.document_path.startswith(os.path.join(tmpdir, ".contractcoding")))
-            self.assertTrue(os.path.exists(manager.document_path))
-
-    def test_partial_task_updates_preserve_module_metadata(self):
-        manager = DocumentManager()
-        manager.execute_actions(
-            [
-                {
-                    "type": "add",
-                    "agent_name": "Project_Manager",
-                    "content": build_contract_markdown(
-                        tasks=[
-                            {
-                                "file": "ui/screen.tsx",
-                                "module": "ui/chat",
-                                "owner": "Frontend_Engineer",
-                                "status": "TODO",
-                                "depends_on": ["core/api.py"],
-                                "class_name": "Screen",
-                            },
-                            {
-                                "file": "core/api.py",
-                                "module": "core/runtime",
-                                "owner": "Backend_Engineer",
-                                "status": "VERIFIED",
-                                "depends_on": [],
-                                "class_name": "ApiService",
-                            },
-                        ]
-                    ),
-                }
-            ]
-        )
-
-        manager.execute_actions(
-            [
-                {
-                    "type": "update",
-                    "agent_name": "Frontend_Engineer",
-                    "content": {
-                        "Symbolic API Specifications": (
-                            "**File:** `ui/screen.tsx`\n"
-                            "*   **Class:** `Screen`\n"
-                            "*   **Owner:** Frontend_Engineer\n"
-                            "*   **Version:** 2\n"
-                            "*   **Status:** DONE"
-                        )
-                    },
-                }
-            ]
-        )
-
-        task = manager.get_task("ui/screen.tsx")
-        self.assertIsNotNone(task)
-        self.assertEqual(task.module, "ui/chat")
-        self.assertEqual(task.depends_on, ["core/api.py"])
-        self.assertEqual(task.status, "DONE")
-
-    def test_graph_traverser_returns_latest_output_state(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"), MAX_LAYERS=4)
-            manager = DocumentManager()
-            manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="VERIFIED")}]
-            )
-
-            traverser = GraphTraverser(
-                config=config,
-                agent_runner=FakeRunner(),
-                memory_processor=MemoryProcessor(config, ["Project_Manager", "Architect"], 100),
-                document_manager=manager,
-            )
-            initial_state = GeneralState(task="demo", sub_task="", role="user", thinking="", output="")
-
-            _, _, terminating_states = traverser.traverse("Project_Manager", initial_state)
-
-            self.assertEqual(len(terminating_states), 1)
-            self.assertEqual(terminating_states[0].output, "Architect-output")
-            self.assertEqual(terminating_states[0].role, "Architect")
-
     def test_agent_forge_wires_search_tool(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
@@ -351,12 +156,8 @@ class ContractCodingRefactorTests(unittest.TestCase):
     def test_task_harness_records_invalid_implementation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
-            manager = DocumentManager()
-            manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
-            )
 
-            harness = TaskHarness(config, manager)
+            harness = TaskHarness(config)
             result = harness.execute(
                 agent=DummyImplementationAgent(tmpdir),
                 agent_name="Backend_Engineer",
@@ -368,14 +169,11 @@ class ContractCodingRefactorTests(unittest.TestCase):
                     output="",
                 ),
                 next_available_agents=[],
-                memory_processor=None,
+                context_manager=None,
             )
 
             self.assertTrue(result.validation_errors)
-            task = manager.get_task("app.py")
-            self.assertIsNotNone(task)
-            self.assertEqual(task.status, "ERROR")
-            self.assertIn("pass", task.render())
+            self.assertTrue(any("Placeholder" in error for error in result.validation_errors))
 
     def test_task_harness_sandbox_promotes_successful_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -384,12 +182,8 @@ class ContractCodingRefactorTests(unittest.TestCase):
                 LOG_PATH=os.path.join(tmpdir, "agent.log"),
                 EXECUTION_PLANE="sandbox",
             )
-            manager = DocumentManager()
-            manager.execute_actions(
-                [{"type": "add", "agent_name": "Project_Manager", "content": build_contract_markdown(status="TODO")}]
-            )
 
-            harness = TaskHarness(config, manager)
+            harness = TaskHarness(config)
             result = harness.execute(
                 agent=SuccessfulImplementationAgent(tmpdir),
                 agent_name="Backend_Engineer",
@@ -401,16 +195,13 @@ class ContractCodingRefactorTests(unittest.TestCase):
                     output="",
                 ),
                 next_available_agents=[],
-                memory_processor=None,
+                context_manager=None,
             )
 
             self.assertEqual(result.validation_errors, [])
             with open(os.path.join(tmpdir, "app.py"), "r", encoding="utf-8") as handle:
                 content = handle.read()
             self.assertIn("return 'ok'", content)
-            task = manager.get_task("app.py")
-            self.assertIsNotNone(task)
-            self.assertEqual(task.status, "DONE")
 
     def test_execution_plane_promotion_rejects_newer_workspace_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -463,17 +254,39 @@ class ContractCodingRefactorTests(unittest.TestCase):
             finally:
                 manager.cleanup(plane)
 
+    def test_execution_plane_snapshots_ignore_runtime_sqlite_ledger_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, ".contractcoding"), exist_ok=True)
+            with open(os.path.join(tmpdir, ".contractcoding", "runs.sqlite-journal"), "w", encoding="utf-8") as handle:
+                handle.write("transient")
+            with open(os.path.join(tmpdir, "app.py"), "w", encoding="utf-8") as handle:
+                handle.write("VALUE = 1\n")
+
+            config = Config(
+                WORKSPACE_DIR=tmpdir,
+                LOG_PATH=os.path.join(tmpdir, "agent.log"),
+                EXECUTION_PLANE="sandbox",
+            )
+            manager = ExecutionPlaneManager(config)
+            plane = manager.acquire("core/runtime", isolated=True)
+            try:
+                self.assertFalse(os.path.exists(os.path.join(plane.working_dir, ".contractcoding", "runs.sqlite-journal")))
+                self.assertFalse(os.path.exists(os.path.join(plane.baseline_dir, ".contractcoding", "runs.sqlite-journal")))
+                self.assertTrue(os.path.exists(os.path.join(plane.working_dir, "app.py")))
+            finally:
+                manager.cleanup(plane)
+
     def test_worktree_plane_inherits_dirty_workspace_snapshot(self):
         with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as runtime_dir:
             subprocess.run(["git", "-C", repo_dir, "init"], check=True, capture_output=True, text=True)
             subprocess.run(
-                ["git", "-C", repo_dir, "config", "user.email", "codex@example.com"],
+                ["git", "-C", repo_dir, "config", "user.email", "agent@example.com"],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             subprocess.run(
-                ["git", "-C", repo_dir, "config", "user.name", "Codex"],
+                ["git", "-C", repo_dir, "config", "user.name", "ContractCoding"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -507,144 +320,82 @@ class ContractCodingRefactorTests(unittest.TestCase):
             finally:
                 manager.cleanup(plane)
 
-    def test_document_manager_compiles_module_team_plans(self):
-        manager = DocumentManager()
-        manager.execute_actions(
-            [
-                {
-                    "type": "add",
-                    "agent_name": "Project_Manager",
-                    "content": build_contract_markdown(
-                        tasks=[
-                            {
-                                "file": "core/api.py",
-                                "module": "core/runtime",
-                                "owner": "Backend_Engineer",
-                                "status": "TODO",
-                                "depends_on": [],
-                                "class_name": "ApiService",
-                            },
-                            {
-                                "file": "ui/widget.tsx",
-                                "module": "ui/chat",
-                                "owner": "Frontend_Engineer",
-                                "status": "DONE",
-                                "depends_on": [],
-                                "class_name": "Widget",
-                            },
-                            {
-                                "file": "ui/screen.tsx",
-                                "module": "ui/chat",
-                                "owner": "Frontend_Engineer",
-                                "status": "TODO",
-                                "depends_on": ["core/api.py"],
-                                "class_name": "Screen",
-                            },
-                        ]
-                    ),
-                }
-            ]
-        )
-
-        plans = {plan.name: plan for plan in manager.get_module_plans()}
-        self.assertEqual(plans["core/runtime"].ready_tasks[0]["file"], "core/api.py")
-        self.assertEqual(plans["ui/chat"].blocked_tasks[0]["blocked_by"], ["core/api.py"])
-        self.assertEqual(plans["ui/chat"].review_tasks[0]["file"], "ui/widget.tsx")
-        self.assertEqual(plans["ui/chat"].module_dependencies, ["core/runtime"])
-
-    def test_graph_traverser_schedules_module_teams_and_review_barriers(self):
+    def test_scheduler_schedules_implementation_team_waves(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"), MAX_LAYERS=4)
-            manager = DocumentManager()
-            manager.execute_actions(
-                [
+            contract = ContractCompiler().compile(
+                "demo",
+                {
+                    "goals": ["demo"],
+                    "work_scopes": [
+                        {"id": "core/runtime", "type": "code_module", "artifacts": ["core/api.py"]},
+                        {"id": "ui/chat", "type": "code_module", "artifacts": ["ui/widget.tsx", "ui/screen.tsx"]},
+                    ],
+                    "work_items": [
                     {
-                        "type": "add",
-                        "agent_name": "Project_Manager",
-                        "content": build_contract_markdown(
-                            tasks=[
-                                {
-                                    "file": "core/api.py",
-                                    "module": "core/runtime",
-                                    "owner": "Backend_Engineer",
-                                    "status": "TODO",
-                                    "depends_on": [],
-                                    "class_name": "ApiService",
-                                },
-                                {
-                                    "file": "ui/widget.tsx",
-                                    "module": "ui/chat",
-                                    "owner": "Frontend_Engineer",
-                                    "status": "DONE",
-                                    "depends_on": [],
-                                    "class_name": "Widget",
-                                },
-                                {
-                                    "file": "ui/screen.tsx",
-                                    "module": "ui/chat",
-                                    "owner": "Frontend_Engineer",
-                                    "status": "TODO",
-                                    "depends_on": ["core/api.py"],
-                                    "class_name": "Screen",
-                                },
-                            ]
-                        ),
-                    }
-                ]
+                        "id": "coding:core/api.py",
+                        "kind": "coding",
+                        "title": "API service",
+                        "scope_id": "core/runtime",
+                        "target_artifacts": ["core/api.py"],
+                        "owner_profile": "Backend_Engineer",
+                        "status": "TODO",
+                        "acceptance_criteria": ["core/api.py implements the API service"],
+                    },
+                    {
+                        "id": "coding:ui/widget.tsx",
+                        "kind": "coding",
+                        "title": "Widget",
+                        "scope_id": "ui/chat",
+                        "target_artifacts": ["ui/widget.tsx"],
+                        "owner_profile": "Frontend_Engineer",
+                        "status": "DONE",
+                        "acceptance_criteria": ["ui/widget.tsx implements the widget"],
+                    },
+                    {
+                        "id": "coding:ui/screen.tsx",
+                        "kind": "coding",
+                        "title": "Screen",
+                        "scope_id": "ui/chat",
+                        "target_artifacts": ["ui/screen.tsx"],
+                        "owner_profile": "Frontend_Engineer",
+                        "status": "TODO",
+                        "depends_on": ["coding:core/api.py"],
+                        "acceptance_criteria": ["ui/screen.tsx implements the screen"],
+                    },
+                    ],
+                },
             )
+            store = RunStore.for_workspace(tmpdir)
+            run_id = store.create_run("demo", tmpdir, contract=contract)
+            waves = Scheduler(store).next_wave(run_id)
 
-            traverser = GraphTraverser(
-                config=config,
-                agent_runner=FakeRunner(),
-                memory_processor=MemoryProcessor(config, ["Project_Manager", "Architect"], 100),
-                document_manager=manager,
-            )
-            base_state = GeneralState(task="demo", sub_task="", role="user", thinking="", output="")
-            next_map = traverser._schedule_from_contract(manager.get(), {"Architect": [base_state]})
+            implementation_items = {
+                item.id
+                for wave in waves
+                if wave.wave_kind == "implementation"
+                for item in wave.items
+            }
+            self.assertIn("coding:core/api.py", implementation_items)
+            self.assertNotIn("coding:ui/screen.tsx", implementation_items)
+            self.assertNotIn("coding:ui/widget.tsx", implementation_items)
+            self.assertTrue(any(wave.execution_plane == "worktree" for wave in waves))
 
-            self.assertIn("Backend_Engineer", next_map)
-            self.assertNotIn("Frontend_Engineer", next_map)
-            self.assertIn("Critic", next_map)
-            self.assertIn("Code_Reviewer", next_map)
-            self.assertIn("Module team: core/runtime", next_map["Backend_Engineer"][0].sub_task)
-            self.assertIn("Target files in this module wave:", next_map["Backend_Engineer"][0].sub_task)
-            self.assertIn("Module team: ui/chat", next_map["Critic"][0].sub_task)
-            self.assertIn("Files to review:", next_map["Critic"][0].sub_task)
+            store.update_work_item_status(run_id, "coding:core/api.py", "RUNNING")
+            store.update_work_item_status(run_id, "coding:core/api.py", "VERIFIED")
+            next_waves = Scheduler(store).next_wave(run_id)
+            next_implementation_items = {
+                item.id
+                for wave in next_waves
+                if wave.wave_kind == "implementation"
+                for item in wave.items
+            }
+            self.assertIn("coding:ui/screen.tsx", next_implementation_items)
 
     def test_task_harness_parses_module_wave_packets_with_multiple_targets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
-            manager = DocumentManager()
-            manager.execute_actions(
-                [
-                    {
-                        "type": "add",
-                        "agent_name": "Project_Manager",
-                        "content": build_contract_markdown(
-                            tasks=[
-                                {
-                                    "file": "core/api.py",
-                                    "module": "core/runtime",
-                                    "owner": "Backend_Engineer",
-                                    "status": "TODO",
-                                    "depends_on": [],
-                                    "class_name": "ApiService",
-                                },
-                                {
-                                    "file": "core/store.py",
-                                    "module": "core/runtime",
-                                    "owner": "Backend_Engineer",
-                                    "status": "TODO",
-                                    "depends_on": [],
-                                    "class_name": "Store",
-                                },
-                            ]
-                        ),
-                    }
-                ]
-            )
 
-            harness = TaskHarness(config, manager)
+            harness = TaskHarness(config)
             state = GeneralState(
                 task="demo",
                 sub_task=(
@@ -664,6 +415,51 @@ class ContractCodingRefactorTests(unittest.TestCase):
             self.assertEqual(spec.target_module, "core/runtime")
             self.assertEqual(spec.target_files, {"core/api.py", "core/store.py"})
             self.assertEqual(spec.owned_files, {"core/api.py", "core/store.py"})
+
+    def test_task_harness_distinguishes_item_targets_from_parallel_wave_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
+            harness = TaskHarness(config)
+            state = GeneralState(
+                task="demo",
+                sub_task=(
+                    "Module team: game\n"
+                    "Wave allowed artifacts:\n"
+                    "- game_engine.py\n"
+                    "- main.py\n\n"
+                    "Target files in this module wave:\n"
+                    "- game_engine.py\n"
+                ),
+                role="user",
+                thinking="",
+                output="",
+            )
+
+            spec = harness.build_spec("Backend_Engineer", state)
+
+            self.assertEqual(spec.target_files, {"game_engine.py"})
+            self.assertEqual(spec.owned_files, {"game_engine.py", "main.py"})
+
+    def test_task_harness_parses_execution_plane_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Config(WORKSPACE_DIR=tmpdir, LOG_PATH=os.path.join(tmpdir, "agent.log"))
+            harness = TaskHarness(config)
+            state = GeneralState(
+                task="demo",
+                sub_task=(
+                    "Module team: core/runtime\n"
+                    "Execution plane: worktree\n"
+                    "Target files in this module wave:\n"
+                    "- core/api.py\n"
+                ),
+                role="user",
+                thinking="",
+                output="",
+            )
+
+            spec = harness.build_spec("Backend_Engineer", state)
+
+            self.assertEqual(spec.execution_plane, "worktree")
 
 
 if __name__ == "__main__":

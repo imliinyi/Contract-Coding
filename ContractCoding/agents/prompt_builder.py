@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Sequence
 
-from ContractCoding.prompts.agents_prompt import AGENT_DETAILS
-from ContractCoding.prompts.system_prompt import CORE_SYSTEM_PROMPT
+from ContractCoding.agents.prompts import AGENT_DETAILS, CORE_SYSTEM_PROMPT, build_system_prompt
 
 
 class AgentPromptBuilder:
@@ -18,7 +17,7 @@ class AgentPromptBuilder:
         current_task: str,
         next_available_agents: Sequence[str],
     ) -> List[Dict[str, str]]:
-        system_prompt = self.system_prompt
+        system_prompt = build_system_prompt(self.agent_name, current_task, self.system_prompt)
         if self.agent_name == "Project_Manager":
             agent_summaries = ", ".join(self._describe_agent(agent_name) for agent_name in next_available_agents)
             system_prompt = f"{system_prompt}\n                # Available Agents: {agent_summaries}\n            "

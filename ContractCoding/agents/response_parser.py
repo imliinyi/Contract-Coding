@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
-from ContractCoding.memory.document import DocumentManager
 from ContractCoding.utils.state import GeneralState
 
 
@@ -16,11 +14,8 @@ class AgentResponseParser:
     def parse_response(
         self,
         response_text: str,
-        document_manager: DocumentManager,
         current_state: GeneralState,
     ) -> GeneralState:
-        self.apply_document_actions(response_text, document_manager)
-
         thinking_match = re.search(r"<thinking>(.*?)</thinking>", response_text, re.DOTALL)
         output_match = re.search(r"<output>(.*?)</output>", response_text, re.DOTALL)
 
@@ -36,43 +31,6 @@ class AgentResponseParser:
             next_agents=[],
             task_requirements={},
         )
-
-    def apply_document_actions(self, response_text: str, document_manager: DocumentManager) -> None:
-        action_json_str = self.parse_tag_with_json("document_action", response_text, expected_type=list)
-        if not action_json_str:
-            return
-
-        try:
-            actions = json.loads(action_json_str)
-        except (json.JSONDecodeError, TypeError) as exc:
-            self.logger.error("Failed to parse document actions: %s", exc)
-            return
-
-        processed_actions = []
-        for action in actions:
-            action_type = action.get("type")
-            if action_type in {"add", "update"}:
-                action["agent_name"] = self.agent_name
-                action["base_version"] = document_manager.get_version()
-
-            if action_type == "add" and action.get("section") is not None and self.agent_name != "Project_Manager":
-                self.logger.warning(
-                    "Ignored section add by non-PM agent: %s section=%s",
-                    self.agent_name,
-                    action.get("section"),
-                )
-                continue
-
-            processed_actions.append(action)
-
-        if not processed_actions:
-            return
-
-        if hasattr(document_manager, "is_aggregating") and document_manager.is_aggregating():
-            document_manager.queue_actions(processed_actions)
-            return
-
-        document_manager.execute_actions(processed_actions)
 
     @staticmethod
     def parse_tag_with_json(
