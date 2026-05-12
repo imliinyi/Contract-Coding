@@ -14,6 +14,8 @@ TOOL_RISK = {
     "list_directory": "read",
     "search_text": "read",
     "inspect_symbol": "read",
+    "contract_snapshot": "read",
+    "inspect_module_api": "read",
     "report_blocker": "read",
     "submit_result": "read",
     "search_web": "network",
@@ -24,6 +26,7 @@ TOOL_RISK = {
     "replace_symbol": "write",
     "add_code": "write",
     "run_code": "execute",
+    "run_public_flow": "read",
 }
 
 

@@ -1,4 +1,4 @@
-"""Thread-local workspace routing for isolated execution planes."""
+"""Thread-local workspace routing used by file tools."""
 
 from __future__ import annotations
 

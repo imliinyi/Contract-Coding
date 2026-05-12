@@ -1,1657 +1,899 @@
-"""Contract V8 canonical models.
-
-The runtime remains contract-first. V8 keeps the progressive freezing model,
-but expresses long coding work as phase contracts: large work moves through a
-small serial phase graph while teams and batches run in parallel inside the
-active phase.
-"""
+"""Small ContractSpec V8 model for the long-running runtime rewrite."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Optional
-
-from ContractCoding.contract.work_item import WorkItem
+from typing import Any, Dict, Iterable, List
 
 
-CONTRACT_VERSION = "8"
-SUPPORTED_CONTRACT_VERSIONS = {CONTRACT_VERSION}
-SCOPE_TYPES = {
-    "code_module",
-    "package",
-    "research",
-    "doc",
-    "ops",
-    "data",
-    "root",
-    "custom",
-    "tests",
-    "integration",
-}
+CONTRACT_VERSION = "ContractSpec V8 / Runtime V5"
 
 
 class ContractValidationError(ValueError):
-    """Raised when a compiled contract is invalid."""
+    """Raised when a generated contract is not schedulable."""
 
 
-def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-INTERFACE_STATUSES = {"DRAFT", "SCAFFOLDED", "TESTED", "FROZEN", "IMPLEMENTED", "VERIFIED"}
-TEAM_FREEZE_STATUSES = {
-    "DRAFT",
-    "READY_FOR_INTERFACE",
-    "READY_FOR_BUILD",
-    "BUILDING",
-    "GATED",
-    "PROMOTED",
-}
-PHASE_MODES = {"serial", "parallel", "hybrid"}
-PHASE_STATUSES = {"PLANNED", "ACTIVE", "PASSED", "BLOCKED", "SUPERSEDED"}
-
-
-def _upper_status(value: str, allowed: set[str], default: str) -> str:
-    normalized = str(value or default).strip().upper()
-    return normalized if normalized in allowed else default
+def _dedupe(values: Iterable[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        text = str(value or "").replace("\\", "/").strip().strip("/")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 @dataclass
-class WorkScope:
-    id: str
-    type: str = "custom"
-    label: str = ""
-    parent_scope: str = ""
-    artifacts: List[str] = field(default_factory=list)
-    conflict_keys: List[str] = field(default_factory=list)
-    execution_plane_policy: str = "auto"
-    interfaces: List[Dict[str, Any]] = field(default_factory=list)
-    verification_policy: Dict[str, Any] = field(default_factory=dict)
-    test_ownership: Dict[str, Any] = field(default_factory=dict)
-    team_policy: Dict[str, Any] = field(default_factory=dict)
-    promotion_policy: Dict[str, Any] = field(default_factory=dict)
-    interface_stability: str = "stable"
+class ProductKernel:
+    """Frozen product semantics shared by planner, workers, judges, and repair."""
 
-    def __post_init__(self) -> None:
-        self.id = str(self.id or "root").strip() or "root"
-        self.type = str(self.type or "custom").strip().lower()
-        if self.type not in SCOPE_TYPES:
-            self.type = "custom"
-        self.label = str(self.label or self.id).strip() or self.id
-        self.parent_scope = str(self.parent_scope or "").strip()
-        self.artifacts = [str(value).strip() for value in self.artifacts if str(value).strip()]
-        self.conflict_keys = [
-            str(value).strip() for value in self.conflict_keys if str(value).strip()
-        ]
-        self.execution_plane_policy = (
-            str(self.execution_plane_policy or "auto").strip().lower() or "auto"
-        )
-        self.interfaces = [dict(value) for value in self.interfaces if isinstance(value, dict)]
-        self.verification_policy = dict(self.verification_policy or {})
-        self.test_ownership = dict(self.test_ownership or {})
-        self.team_policy = dict(self.team_policy or {})
-        self.promotion_policy = dict(self.promotion_policy or {})
-        stability = str(self.interface_stability or "stable").strip().lower()
-        self.interface_stability = stability if stability in {"stable", "draft", "volatile"} else "stable"
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "WorkScope":
-        return cls(
-            id=str(payload.get("id", "root")),
-            type=str(payload.get("type", "custom")),
-            label=str(payload.get("label", "")),
-            parent_scope=str(payload.get("parent_scope", "")),
-            artifacts=list(payload.get("artifacts", [])),
-            conflict_keys=list(payload.get("conflict_keys", [])),
-            execution_plane_policy=str(payload.get("execution_plane_policy", "auto")),
-            interfaces=list(payload.get("interfaces", [])),
-            verification_policy=dict(payload.get("verification_policy", {})),
-            test_ownership=dict(payload.get("test_ownership", {})),
-            team_policy=dict(payload.get("team_policy", {})),
-            promotion_policy=dict(payload.get("promotion_policy", {})),
-            interface_stability=str(payload.get("interface_stability", "stable")),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "id": self.id,
-        }
-        if self.type != "custom":
-            payload["type"] = self.type
-        if self.label and self.label != self.id:
-            payload["label"] = self.label
-        if self.parent_scope and self.parent_scope != "root":
-            payload["parent_scope"] = self.parent_scope
-        if self.artifacts and self.type not in {"code_module", "tests", "integration", "package"}:
-            payload["artifacts"] = list(self.artifacts)
-        if self.conflict_keys and not self._conflict_keys_are_derived():
-            payload["conflict_keys"] = list(self.conflict_keys)
-        if self.execution_plane_policy and self.execution_plane_policy != "auto":
-            payload["execution_plane_policy"] = self.execution_plane_policy
-        interfaces = [interface for interface in self.interfaces if interface.get("type") != "scope_artifacts"]
-        if interfaces:
-            payload["interfaces"] = interfaces
-        if self.verification_policy and not self._verification_policy_is_derived():
-            payload["verification_policy"] = dict(self.verification_policy)
-        if self.test_ownership and self.test_ownership.get("owned_tests"):
-            payload["test_ownership"] = dict(self.test_ownership)
-        if self.team_policy:
-            payload["team_policy"] = dict(self.team_policy)
-        if self.promotion_policy:
-            payload["promotion_policy"] = dict(self.promotion_policy)
-        if self.interface_stability != "stable":
-            payload["interface_stability"] = self.interface_stability
-        return payload
-
-    def _conflict_keys_are_derived(self) -> bool:
-        if not self.artifacts:
-            return False
-        expected = [f"scope:{self.id}", *[f"artifact:{artifact}" for artifact in self.artifacts]]
-        return self.conflict_keys == expected
-
-    def _verification_policy_is_derived(self) -> bool:
-        expected = {
-            "layers": ["self_check", "team_gate"],
-            "team_gate_required": True,
-            "team_gate_id": f"team:{self.id}",
-        }
-        if self.type == "integration":
-            expected = {"layers": ["final_gate"], "final_gate_id": "final"}
-        return self.verification_policy == expected
-
-
-@dataclass
-class TeamGateSpec:
-    """Plan-only team gate.
-
-    Team gates are the scope-level quality boundary in ContractSpec V8. They are not
-    WorkItems: runtime stores their status separately and only runs them after
-    the team's implementation WorkItems pass self-check.
-    """
-
-    scope_id: str
-    test_artifacts: List[str] = field(default_factory=list)
-    test_plan: Dict[str, Any] = field(default_factory=dict)
-    review_policy: Dict[str, Any] = field(default_factory=dict)
-    deterministic_checks: List[str] = field(default_factory=list)
-    required: bool = True
-
-    def __post_init__(self) -> None:
-        self.scope_id = str(self.scope_id or "root").strip() or "root"
-        self.test_artifacts = [
-            str(value).strip() for value in self.test_artifacts if str(value).strip()
-        ]
-        self.test_plan = dict(self.test_plan or {})
-        self.review_policy = dict(self.review_policy or {})
-        self.review_policy.setdefault("review_layer", "team")
-        self.review_policy.setdefault(
-            "allowed_block_reasons",
-            [
-                "missing_behavior",
-                "invalid_tests",
-                "interface_mismatch",
-                "placeholder",
-                "unsafe_side_effect",
-            ],
-        )
-        self.deterministic_checks = [
-            str(value).strip() for value in self.deterministic_checks if str(value).strip()
-        ] or ["artifact_coverage", "syntax_import", "functional_smoke", "placeholder_scan"]
-        self.required = bool(self.required)
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "TeamGateSpec":
-        return cls(
-            scope_id=str(payload.get("scope_id", "root")),
-            test_artifacts=list(payload.get("test_artifacts", [])),
-            test_plan=dict(payload.get("test_plan", {})),
-            review_policy=dict(payload.get("review_policy", {})),
-            deterministic_checks=list(payload.get("deterministic_checks", [])),
-            required=bool(payload.get("required", True)),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"scope_id": self.scope_id}
-        if self.test_artifacts:
-            payload["test_artifacts"] = list(self.test_artifacts)
-        if self.test_plan:
-            payload["test_plan"] = dict(self.test_plan)
-        if self.review_policy:
-            payload["review_policy"] = dict(self.review_policy)
-        if self.deterministic_checks:
-            payload["deterministic_checks"] = list(self.deterministic_checks)
-        if not self.required:
-            payload["required"] = False
-        return payload
-
-
-@dataclass
-class FinalGateSpec:
-    """Plan-only project integration gate."""
-
-    required_artifacts: List[str] = field(default_factory=list)
-    python_artifacts: List[str] = field(default_factory=list)
-    package_roots: List[str] = field(default_factory=list)
-    requires_tests: bool = False
-    allowed_extra_paths: List[str] = field(default_factory=lambda: ["agent.log"])
-    final_acceptance_scenarios: List[Dict[str, Any]] = field(default_factory=list)
-    product_behavior: Dict[str, Any] = field(default_factory=dict)
-    review_policy: Dict[str, Any] = field(default_factory=dict)
-    deterministic_checks: List[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.required_artifacts = [
-            str(value).strip() for value in self.required_artifacts if str(value).strip()
-        ]
-        self.python_artifacts = [
-            str(value).strip() for value in self.python_artifacts if str(value).strip()
-        ]
-        self.package_roots = [
-            str(value).strip() for value in self.package_roots if str(value).strip()
-        ]
-        self.requires_tests = bool(self.requires_tests)
-        self.allowed_extra_paths = [
-            str(value).strip() for value in self.allowed_extra_paths if str(value).strip()
-        ] or ["agent.log"]
-        self.final_acceptance_scenarios = [
-            dict(value) for value in self.final_acceptance_scenarios if isinstance(value, dict)
-        ]
-        self.product_behavior = self._normalize_product_behavior(self.product_behavior)
-        self.review_policy = dict(self.review_policy or {})
-        self.review_policy.setdefault("review_layer", "final")
-        self.review_policy.setdefault(
-            "allowed_block_reasons",
-            self._default_allowed_block_reasons(),
-        )
-        self.deterministic_checks = [
-            str(value).strip() for value in self.deterministic_checks if str(value).strip()
-        ] or self._default_deterministic_checks()
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any] | None) -> "FinalGateSpec":
-        payload = dict(payload or {})
-        return cls(
-            required_artifacts=list(payload.get("required_artifacts", [])),
-            python_artifacts=list(payload.get("python_artifacts", [])),
-            package_roots=list(payload.get("package_roots", [])),
-            requires_tests=bool(payload.get("requires_tests", False)),
-            allowed_extra_paths=list(payload.get("allowed_extra_paths", ["agent.log"])),
-            final_acceptance_scenarios=list(payload.get("final_acceptance_scenarios", [])),
-            product_behavior=dict(payload.get("product_behavior") or {}),
-            review_policy=dict(payload.get("review_policy", {})),
-            deterministic_checks=list(payload.get("deterministic_checks", [])),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {}
-        if self.required_artifacts:
-            payload["required_artifacts"] = list(self.required_artifacts)
-        if self.python_artifacts:
-            payload["python_artifacts"] = list(self.python_artifacts)
-        if self.package_roots:
-            payload["package_roots"] = list(self.package_roots)
-        if self.requires_tests:
-            payload["requires_tests"] = True
-        if self.allowed_extra_paths != ["agent.log"]:
-            payload["allowed_extra_paths"] = list(self.allowed_extra_paths)
-        if self.final_acceptance_scenarios:
-            payload["final_acceptance_scenarios"] = list(self.final_acceptance_scenarios)
-        if self.product_behavior:
-            payload["product_behavior"] = dict(self.product_behavior)
-        if self.review_policy and self.review_policy != self._default_review_policy():
-            payload["review_policy"] = dict(self.review_policy)
-        if self.deterministic_checks and self.deterministic_checks != self._default_deterministic_checks():
-            payload["deterministic_checks"] = list(self.deterministic_checks)
-        return payload
-
-    @staticmethod
-    def _default_allowed_block_reasons() -> List[str]:
-        return [
-            "missing_artifact",
-            "test_failure",
-            "integration_failure",
-            "placeholder",
-            "unexpected_write",
-        ]
-
-    @classmethod
-    def _default_review_policy(cls) -> Dict[str, Any]:
-        return {
-            "review_layer": "final",
-            "allowed_block_reasons": cls._default_allowed_block_reasons(),
-        }
-
-    @staticmethod
-    def _default_deterministic_checks() -> List[str]:
-        return [
-            "artifact_coverage",
-            "compile_import_all",
-            "unittest_discover",
-            "placeholder_scan",
-            "unexpected_writes",
-        ]
-
-    @staticmethod
-    def _normalize_product_behavior(payload: Dict[str, Any] | None) -> Dict[str, Any]:
-        raw = dict(payload or {})
-        if not raw:
-            return {}
-        normalized: Dict[str, Any] = {}
-        capabilities = [
-            str(value).strip()
-            for value in raw.get("capabilities", [])
-            if str(value).strip()
-        ]
-        if capabilities:
-            normalized["capabilities"] = capabilities
-        scenarios = [
-            dict(value)
-            for value in raw.get("integration_scenarios", [])
-            if isinstance(value, dict)
-        ]
-        if scenarios:
-            normalized["integration_scenarios"] = scenarios
-        commands = [
-            dict(value)
-            for value in raw.get("blackbox_commands", [])
-            if isinstance(value, dict)
-        ]
-        if commands:
-            normalized["blackbox_commands"] = commands
-        requirements = [
-            dict(value)
-            for value in raw.get("semantic_requirements", [])
-            if isinstance(value, dict)
-        ]
-        if requirements:
-            normalized["semantic_requirements"] = requirements
-        targets = dict(raw.get("coverage_targets", {}) or {})
-        if targets:
-            normalized["coverage_targets"] = targets
-        return normalized
-
-
-@dataclass
-class RequirementSpec:
-    summary: str = ""
-    delivery_type: str = "coding"
-    user_flows: List[str] = field(default_factory=list)
-    acceptance_scenarios: List[Dict[str, Any]] = field(default_factory=list)
-    constraints: List[str] = field(default_factory=list)
-    non_goals: List[str] = field(default_factory=list)
-    quality_bar: List[str] = field(default_factory=list)
-    ambiguities: List[str] = field(default_factory=list)
+    ontology: Dict[str, Any] = field(default_factory=dict)
+    formulas: Dict[str, Any] = field(default_factory=dict)
+    public_api_policy: Dict[str, Any] = field(default_factory=dict)
+    test_generation_policy: Dict[str, Any] = field(default_factory=dict)
+    schemas: List[Dict[str, Any]] = field(default_factory=list)
+    fixtures: List[Dict[str, Any]] = field(default_factory=list)
+    flows: List[Dict[str, Any]] = field(default_factory=list)
+    invariants: List[Dict[str, Any]] = field(default_factory=list)
+    semantic_invariants: List[Dict[str, Any]] = field(default_factory=list)
+    acceptance_matrix: List[Dict[str, Any]] = field(default_factory=list)
+    public_paths: List[Dict[str, Any]] = field(default_factory=list)
     status: str = "FROZEN"
 
-    def __post_init__(self) -> None:
-        self.summary = str(self.summary or "").strip()
-        self.delivery_type = str(self.delivery_type or "coding").strip().lower() or "coding"
-        self.user_flows = [str(value).strip() for value in self.user_flows if str(value).strip()]
-        self.acceptance_scenarios = [
-            dict(value) for value in self.acceptance_scenarios if isinstance(value, dict)
-        ]
-        self.constraints = [str(value).strip() for value in self.constraints if str(value).strip()]
-        self.non_goals = [str(value).strip() for value in self.non_goals if str(value).strip()]
-        self.quality_bar = [str(value).strip() for value in self.quality_bar if str(value).strip()]
-        self.ambiguities = [str(value).strip() for value in self.ambiguities if str(value).strip()]
-        self.status = _upper_status(self.status, {"DRAFT", "FROZEN"}, "FROZEN")
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "ontology": dict(self.ontology),
+            "formulas": dict(self.formulas),
+            "public_api_policy": dict(self.public_api_policy),
+            "test_generation_policy": dict(self.test_generation_policy),
+            "schemas": list(self.schemas),
+            "fixtures": list(self.fixtures),
+            "flows": list(self.flows),
+            "invariants": list(self.invariants),
+            "semantic_invariants": list(self.semantic_invariants),
+            "acceptance_matrix": list(self.acceptance_matrix),
+            "public_paths": list(self.public_paths),
+            "status": self.status,
+        }
 
     @classmethod
-    def from_mapping(cls, payload: Dict[str, Any] | None) -> "RequirementSpec":
+    def from_mapping(cls, payload: Dict[str, Any] | None) -> "ProductKernel":
         payload = dict(payload or {})
         return cls(
-            summary=str(payload.get("summary", "")),
-            delivery_type=str(payload.get("delivery_type", "coding")),
-            user_flows=list(payload.get("user_flows", [])),
-            acceptance_scenarios=list(payload.get("acceptance_scenarios", [])),
-            constraints=list(payload.get("constraints", [])),
-            non_goals=list(payload.get("non_goals", [])),
-            quality_bar=list(payload.get("quality_bar", [])),
-            ambiguities=list(payload.get("ambiguities", [])),
+            ontology=dict(payload.get("ontology", {}) or {}),
+            formulas=dict(payload.get("formulas", {}) or {}),
+            public_api_policy=dict(payload.get("public_api_policy", {}) or {}),
+            test_generation_policy=dict(payload.get("test_generation_policy", {}) or {}),
+            schemas=list(payload.get("schemas", []) or []),
+            fixtures=list(payload.get("fixtures", []) or []),
+            flows=list(payload.get("flows", []) or []),
+            invariants=list(payload.get("invariants", []) or []),
+            semantic_invariants=list(payload.get("semantic_invariants", []) or []),
+            acceptance_matrix=list(payload.get("acceptance_matrix", []) or []),
+            public_paths=list(payload.get("public_paths", []) or []),
             status=str(payload.get("status", "FROZEN")),
         )
 
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "summary": self.summary,
-            "delivery_type": self.delivery_type,
-            "status": self.status,
-        }
-        if self.user_flows:
-            payload["user_flows"] = list(self.user_flows)
-        if self.acceptance_scenarios:
-            payload["acceptance_scenarios"] = list(self.acceptance_scenarios)
-        if self.constraints:
-            payload["constraints"] = list(self.constraints)
-        if self.non_goals:
-            payload["non_goals"] = list(self.non_goals)
-        if self.quality_bar:
-            payload["quality_bar"] = list(self.quality_bar)
-        if self.ambiguities:
-            payload["ambiguities"] = list(self.ambiguities)
-        return payload
-
 
 @dataclass
-class ArchitectureSpec:
-    status: str = "DRAFT"
-    bounded_contexts: List[Dict[str, Any]] = field(default_factory=list)
-    dependency_direction: List[Dict[str, Any]] = field(default_factory=list)
-    artifacts: Dict[str, List[str]] = field(default_factory=dict)
-    notes: List[str] = field(default_factory=list)
+class CanonicalSubstrate:
+    """Frozen shared type substrate that must land before dependent slices.
 
-    def __post_init__(self) -> None:
-        self.status = _upper_status(self.status, {"DRAFT", "FROZEN"}, "DRAFT")
-        self.bounded_contexts = [
-            dict(value) for value in self.bounded_contexts if isinstance(value, dict)
-        ]
-        self.dependency_direction = [
-            dict(value) for value in self.dependency_direction if isinstance(value, dict)
-        ]
-        self.artifacts = {
-            str(key).strip(): [str(item).strip() for item in value if str(item).strip()]
-            for key, value in dict(self.artifacts or {}).items()
-            if str(key).strip() and isinstance(value, list)
-        }
-        self.notes = [str(value).strip() for value in self.notes if str(value).strip()]
+    The substrate is deliberately small: it names the owner artifact for each
+    canonical value object/enum and the slice ids that must be implemented
+    before consumers are allowed to guess or recreate those shapes.
+    """
 
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any] | None) -> "ArchitectureSpec":
-        payload = dict(payload or {})
-        return cls(
-            status=str(payload.get("status", "DRAFT")),
-            bounded_contexts=list(payload.get("bounded_contexts", [])),
-            dependency_direction=list(payload.get("dependency_direction", [])),
-            artifacts=dict(payload.get("artifacts", {})),
-            notes=list(payload.get("notes", [])),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"status": self.status}
-        if self.bounded_contexts:
-            payload["bounded_contexts"] = list(self.bounded_contexts)
-        if self.dependency_direction:
-            payload["dependency_direction"] = list(self.dependency_direction)
-        if self.artifacts:
-            payload["artifacts"] = dict(self.artifacts)
-        if self.notes:
-            payload["notes"] = list(self.notes)
-        return payload
-
-
-@dataclass
-class MilestoneSpec:
-    id: str
-    mode: str = "serial"
-    depends_on: List[str] = field(default_factory=list)
-    ready_condition: str = ""
-    completion_condition: str = ""
+    owner_by_type: Dict[str, str] = field(default_factory=dict)
+    owner_artifacts: List[str] = field(default_factory=list)
+    substrate_slice_ids: List[str] = field(default_factory=list)
+    consumer_slice_ids: List[str] = field(default_factory=list)
     status: str = "PLANNED"
 
-    def __post_init__(self) -> None:
-        self.id = str(self.id or "").strip()
-        self.mode = str(self.mode or "serial").strip().lower() or "serial"
-        if self.mode not in {"serial", "parallel", "hybrid"}:
-            self.mode = "serial"
-        self.depends_on = [str(value).strip() for value in self.depends_on if str(value).strip()]
-        self.ready_condition = str(self.ready_condition or "").strip()
-        self.completion_condition = str(self.completion_condition or "").strip()
-        self.status = str(self.status or "PLANNED").strip().upper() or "PLANNED"
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "owner_by_type": dict(self.owner_by_type),
+            "owner_artifacts": list(self.owner_artifacts),
+            "substrate_slice_ids": list(self.substrate_slice_ids),
+            "consumer_slice_ids": list(self.consumer_slice_ids),
+            "status": self.status,
+        }
 
     @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "MilestoneSpec":
+    def from_mapping(cls, payload: Dict[str, Any] | None) -> "CanonicalSubstrate":
+        payload = dict(payload or {})
         return cls(
-            id=str(payload.get("id", "")),
-            mode=str(payload.get("mode", "serial")),
-            depends_on=list(payload.get("depends_on", [])),
-            ready_condition=str(payload.get("ready_condition", "")),
-            completion_condition=str(payload.get("completion_condition", "")),
+            owner_by_type=dict(payload.get("owner_by_type", {}) or {}),
+            owner_artifacts=_dedupe(payload.get("owner_artifacts", []) or []),
+            substrate_slice_ids=_dedupe(payload.get("substrate_slice_ids", []) or []),
+            consumer_slice_ids=_dedupe(payload.get("consumer_slice_ids", []) or []),
             status=str(payload.get("status", "PLANNED")),
         )
 
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"id": self.id, "mode": self.mode, "status": self.status}
-        if self.depends_on:
-            payload["depends_on"] = list(self.depends_on)
-        if self.ready_condition:
-            payload["ready_condition"] = self.ready_condition
-        if self.completion_condition:
-            payload["completion_condition"] = self.completion_condition
-        return payload
-
 
 @dataclass
-class PhaseGateSpec:
-    checks: List[str] = field(default_factory=list)
-    criteria: List[str] = field(default_factory=list)
-    evaluator: str = "system"
-
-    def __post_init__(self) -> None:
-        self.checks = [str(value).strip() for value in self.checks if str(value).strip()]
-        self.criteria = [str(value).strip() for value in self.criteria if str(value).strip()]
-        self.evaluator = str(self.evaluator or "system").strip() or "system"
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any] | None) -> "PhaseGateSpec":
-        payload = dict(payload or {})
-        return cls(
-            checks=list(payload.get("checks", [])),
-            criteria=list(payload.get("criteria", [])),
-            evaluator=str(payload.get("evaluator", "system")),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"evaluator": self.evaluator}
-        if self.checks:
-            payload["checks"] = list(self.checks)
-        if self.criteria:
-            payload["criteria"] = list(self.criteria)
-        return payload
-
-
-@dataclass
-class PhaseHandoffSpec:
-    artifacts: List[str] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.artifacts = [
-            str(value).replace("\\", "/").strip()
-            for value in self.artifacts
-            if str(value).strip()
-        ]
-        self.notes = [str(value).strip() for value in self.notes if str(value).strip()]
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any] | None) -> "PhaseHandoffSpec":
-        payload = dict(payload or {})
-        return cls(
-            artifacts=list(payload.get("artifacts", [])),
-            notes=list(payload.get("notes", [])),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {}
-        if self.artifacts:
-            payload["artifacts"] = list(self.artifacts)
-        if self.notes:
-            payload["notes"] = list(self.notes)
-        return payload
-
-
-@dataclass
-class PhaseContract:
-    phase_id: str
-    goal: str = ""
-    mode: str = "parallel"
-    entry_conditions: List[str] = field(default_factory=list)
-    teams_in_scope: List[str] = field(default_factory=list)
-    deliverables: List[str] = field(default_factory=list)
-    phase_gate: PhaseGateSpec | Dict[str, Any] | None = None
-    handoff: PhaseHandoffSpec | Dict[str, Any] | None = None
-    status: str = "PLANNED"
-
-    def __post_init__(self) -> None:
-        self.phase_id = str(self.phase_id or "").strip()
-        self.goal = str(self.goal or "").strip()
-        self.mode = str(self.mode or "parallel").strip().lower() or "parallel"
-        if self.mode not in PHASE_MODES:
-            self.mode = "parallel"
-        self.entry_conditions = [
-            str(value).strip() for value in self.entry_conditions if str(value).strip()
-        ]
-        self.teams_in_scope = [
-            str(value).strip() for value in self.teams_in_scope if str(value).strip()
-        ]
-        self.deliverables = [
-            str(value).replace("\\", "/").strip()
-            for value in self.deliverables
-            if str(value).strip()
-        ]
-        if self.phase_gate is None:
-            self.phase_gate = PhaseGateSpec()
-        elif not isinstance(self.phase_gate, PhaseGateSpec):
-            self.phase_gate = PhaseGateSpec.from_mapping(self.phase_gate)
-        if self.handoff is None:
-            self.handoff = PhaseHandoffSpec()
-        elif not isinstance(self.handoff, PhaseHandoffSpec):
-            self.handoff = PhaseHandoffSpec.from_mapping(self.handoff)
-        self.status = _upper_status(self.status, PHASE_STATUSES, "PLANNED")
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "PhaseContract":
-        handoff_payload = payload.get("handoff", None)
-        if handoff_payload is None and "handoff_artifacts" in payload:
-            handoff_payload = {"artifacts": payload.get("handoff_artifacts", [])}
-        return cls(
-            phase_id=str(payload.get("phase_id", payload.get("id", ""))),
-            goal=str(payload.get("goal", "")),
-            mode=str(payload.get("mode", "parallel")),
-            entry_conditions=list(payload.get("entry_conditions", [])),
-            teams_in_scope=list(payload.get("teams_in_scope", payload.get("teams", []))),
-            deliverables=list(payload.get("deliverables", [])),
-            phase_gate=payload.get("phase_gate", payload.get("gate", {})),
-            handoff=handoff_payload or {},
-            status=str(payload.get("status", "PLANNED")),
-        )
-
-    def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "phase_id": self.phase_id,
-            "goal": self.goal,
-            "mode": self.mode,
-            "status": self.status,
-        }
-        if self.entry_conditions:
-            payload["entry_conditions"] = list(self.entry_conditions)
-        if self.teams_in_scope:
-            payload["teams_in_scope"] = list(self.teams_in_scope)
-        if self.deliverables:
-            payload["deliverables"] = list(self.deliverables)
-        if isinstance(self.phase_gate, PhaseGateSpec):
-            gate = self.phase_gate.to_record()
-            if gate.get("checks") or gate.get("criteria"):
-                payload["phase_gate"] = gate
-        if isinstance(self.handoff, PhaseHandoffSpec):
-            handoff = self.handoff.to_record()
-            if handoff:
-                payload["handoff"] = handoff
-        return payload
-
-
-@dataclass
-class InterfaceSpec:
+class FeatureSlice:
     id: str
-    owner_team: str = ""
-    consumers: List[str] = field(default_factory=list)
-    artifact: str = ""
-    symbols: List[Dict[str, Any]] = field(default_factory=list)
-    schemas: List[str] = field(default_factory=list)
-    semantics: List[str] = field(default_factory=list)
-    status: str = "DRAFT"
-    critical: bool = False
-    source_milestone: str = ""
-    stability: str = "team-local"
-    scaffold: Dict[str, Any] = field(default_factory=dict)
-    conformance_tests: List[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.id = str(self.id or "").strip()
-        self.owner_team = str(self.owner_team or "").strip()
-        self.consumers = [str(value).strip() for value in self.consumers if str(value).strip()]
-        self.artifact = str(self.artifact or "").replace("\\", "/").strip()
-        self.symbols = [dict(value) for value in self.symbols if isinstance(value, dict)]
-        self.schemas = [str(value).strip() for value in self.schemas if str(value).strip()]
-        self.semantics = [str(value).strip() for value in self.semantics if str(value).strip()]
-        self.status = _upper_status(self.status, INTERFACE_STATUSES, "DRAFT")
-        self.critical = bool(self.critical)
-        self.source_milestone = str(self.source_milestone or "").strip()
-        self.stability = str(self.stability or "team-local").strip().lower() or "team-local"
-        self.scaffold = dict(self.scaffold or {})
-        self.conformance_tests = [
-            str(value).strip() for value in self.conformance_tests if str(value).strip()
-        ]
-
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "InterfaceSpec":
-        return cls(
-            id=str(payload.get("id", "")),
-            owner_team=str(payload.get("owner_team", payload.get("owner", ""))),
-            consumers=list(payload.get("consumers", [])),
-            artifact=str(payload.get("artifact", "")),
-            symbols=list(payload.get("symbols", [])),
-            schemas=list(payload.get("schemas", [])),
-            semantics=list(payload.get("semantics", [])),
-            status=str(payload.get("status", "DRAFT")),
-            critical=bool(payload.get("critical", False)),
-            source_milestone=str(payload.get("source_milestone", "")),
-            stability=str(payload.get("stability", "team-local")),
-            scaffold=dict(payload.get("scaffold", {})),
-            conformance_tests=list(payload.get("conformance_tests", [])),
-        )
+    title: str
+    feature_team_id: str = ""
+    owner_artifacts: List[str] = field(default_factory=list)
+    consumer_artifacts: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    fixture_refs: List[str] = field(default_factory=list)
+    invariant_refs: List[str] = field(default_factory=list)
+    acceptance_refs: List[str] = field(default_factory=list)
+    done_contract: List[str] = field(default_factory=list)
+    interface_contract: Dict[str, Any] = field(default_factory=dict)
+    semantic_contract: Dict[str, Any] = field(default_factory=dict)
+    slice_smoke: List[Dict[str, Any]] = field(default_factory=list)
+    phase: str = "slice.build"
+    conflict_keys: List[str] = field(default_factory=list)
 
     def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+        return {
             "id": self.id,
-            "owner_team": self.owner_team,
-            "status": self.status,
+            "title": self.title,
+            "feature_team_id": self.feature_team_id,
+            "owner_artifacts": list(self.owner_artifacts),
+            "consumer_artifacts": list(self.consumer_artifacts),
+            "dependencies": list(self.dependencies),
+            "fixture_refs": list(self.fixture_refs),
+            "invariant_refs": list(self.invariant_refs),
+            "acceptance_refs": list(self.acceptance_refs),
+            "done_contract": list(self.done_contract),
+            "interface_contract": dict(self.interface_contract),
+            "semantic_contract": dict(self.semantic_contract),
+            "slice_smoke": list(self.slice_smoke),
+            "phase": self.phase,
+            "conflict_keys": list(self.conflict_keys),
         }
-        if self.consumers:
-            payload["consumers"] = list(self.consumers)
-        if self.artifact:
-            payload["artifact"] = self.artifact
-        if self.symbols:
-            payload["symbols"] = list(self.symbols)
-        if self.schemas:
-            payload["schemas"] = list(self.schemas)
-        if self.semantics:
-            payload["semantics"] = list(self.semantics)
-        if self.critical:
-            payload["critical"] = True
-        if self.source_milestone:
-            payload["source_milestone"] = self.source_milestone
-        if self.stability != "team-local":
-            payload["stability"] = self.stability
-        if self.scaffold:
-            payload["scaffold"] = dict(self.scaffold)
-        if self.conformance_tests:
-            payload["conformance_tests"] = list(self.conformance_tests)
-        return payload
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "FeatureSlice":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            title=str(payload.get("title", "")).strip(),
+            feature_team_id=str(payload.get("feature_team_id", "")).strip(),
+            owner_artifacts=_dedupe(payload.get("owner_artifacts", []) or []),
+            consumer_artifacts=_dedupe(payload.get("consumer_artifacts", []) or []),
+            dependencies=_dedupe(payload.get("dependencies", []) or []),
+            fixture_refs=_dedupe(payload.get("fixture_refs", []) or []),
+            invariant_refs=_dedupe(payload.get("invariant_refs", []) or []),
+            acceptance_refs=_dedupe(payload.get("acceptance_refs", []) or []),
+            done_contract=[str(value) for value in payload.get("done_contract", []) or []],
+            interface_contract=dict(payload.get("interface_contract", {}) or {}),
+            semantic_contract=dict(payload.get("semantic_contract", {}) or {}),
+            slice_smoke=list(payload.get("slice_smoke", []) or []),
+            phase=str(payload.get("phase", "slice.build")),
+            conflict_keys=_dedupe(payload.get("conflict_keys", []) or []),
+        )
 
 
 @dataclass
-class ContractDelta:
+class InterfaceCapsule:
+    """Compact, versioned producer contract shared across async teams.
+
+    Capsules are the only cross-team context workers should rely on. They do
+    not freeze private internals; they freeze public modules, canonical imports,
+    expected shapes, examples, fixtures, smoke checks, and compatibility rules.
+    """
+
     id: str
-    kind: str
-    affected_teams: List[str] = field(default_factory=list)
-    affected_interfaces: List[str] = field(default_factory=list)
-    reason: str = ""
+    team_id: str
+    version: str = "v1"
+    producer_slice_ids: List[str] = field(default_factory=list)
+    consumer_team_ids: List[str] = field(default_factory=list)
+    owner_artifacts: List[str] = field(default_factory=list)
+    public_modules: List[str] = field(default_factory=list)
+    canonical_imports: Dict[str, str] = field(default_factory=dict)
+    capabilities: List[str] = field(default_factory=list)
+    key_signatures: List[Dict[str, Any]] = field(default_factory=list)
+    examples: List[Dict[str, Any]] = field(default_factory=list)
+    fixtures: List[Dict[str, Any]] = field(default_factory=list)
+    smoke: List[Dict[str, Any]] = field(default_factory=list)
+    contract_tests: List[Dict[str, Any]] = field(default_factory=list)
+    lock_item_id: str = ""
+    lock_evidence: List[str] = field(default_factory=list)
+    compatibility: Dict[str, Any] = field(default_factory=dict)
+    status: str = "INTENT"
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "team_id": self.team_id,
+            "version": self.version,
+            "producer_slice_ids": list(self.producer_slice_ids),
+            "consumer_team_ids": list(self.consumer_team_ids),
+            "owner_artifacts": list(self.owner_artifacts),
+            "public_modules": list(self.public_modules),
+            "canonical_imports": dict(self.canonical_imports),
+            "capabilities": list(self.capabilities),
+            "key_signatures": list(self.key_signatures),
+            "examples": list(self.examples),
+            "fixtures": list(self.fixtures),
+            "smoke": list(self.smoke),
+            "contract_tests": list(self.contract_tests),
+            "lock_item_id": self.lock_item_id,
+            "lock_evidence": list(self.lock_evidence),
+            "compatibility": dict(self.compatibility),
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "InterfaceCapsule":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            team_id=str(payload.get("team_id", "")).strip(),
+            version=str(payload.get("version", "v1")).strip() or "v1",
+            producer_slice_ids=_dedupe(payload.get("producer_slice_ids", []) or []),
+            consumer_team_ids=_dedupe(payload.get("consumer_team_ids", []) or []),
+            owner_artifacts=_dedupe(payload.get("owner_artifacts", []) or []),
+            public_modules=_dedupe(payload.get("public_modules", []) or []),
+            canonical_imports=dict(payload.get("canonical_imports", {}) or {}),
+            capabilities=_dedupe(payload.get("capabilities", []) or []),
+            key_signatures=list(payload.get("key_signatures", []) or []),
+            examples=list(payload.get("examples", []) or []),
+            fixtures=list(payload.get("fixtures", []) or []),
+            smoke=list(payload.get("smoke", []) or []),
+            contract_tests=list(payload.get("contract_tests", []) or []),
+            lock_item_id=str(payload.get("lock_item_id", "")),
+            lock_evidence=[str(value) for value in payload.get("lock_evidence", []) or []],
+            compatibility=dict(payload.get("compatibility", {}) or {}),
+            status=str(payload.get("status", "INTENT")),
+        )
+
+
+@dataclass
+class FeatureTeam:
+    """Coarse feature-team contract above individual slices."""
+
+    id: str
+    title: str
+    slice_ids: List[str] = field(default_factory=list)
+    owner_artifacts: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    consumer_team_ids: List[str] = field(default_factory=list)
+    acceptance_refs: List[str] = field(default_factory=list)
+    interface_capsule_refs: List[str] = field(default_factory=list)
+    subcontract_ref: str = ""
+    local_done_contract: List[str] = field(default_factory=list)
+    team_contract: Dict[str, Any] = field(default_factory=dict)
+    coordination_mode: str = "mixed"
+    status: str = "PLANNED"
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "slice_ids": list(self.slice_ids),
+            "owner_artifacts": list(self.owner_artifacts),
+            "dependencies": list(self.dependencies),
+            "consumer_team_ids": list(self.consumer_team_ids),
+            "acceptance_refs": list(self.acceptance_refs),
+            "interface_capsule_refs": list(self.interface_capsule_refs),
+            "subcontract_ref": self.subcontract_ref,
+            "local_done_contract": list(self.local_done_contract),
+            "team_contract": dict(self.team_contract),
+            "coordination_mode": self.coordination_mode,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "FeatureTeam":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            title=str(payload.get("title", "")).strip(),
+            slice_ids=_dedupe(payload.get("slice_ids", []) or []),
+            owner_artifacts=_dedupe(payload.get("owner_artifacts", []) or []),
+            dependencies=_dedupe(payload.get("dependencies", []) or []),
+            consumer_team_ids=_dedupe(payload.get("consumer_team_ids", []) or []),
+            acceptance_refs=_dedupe(payload.get("acceptance_refs", []) or []),
+            interface_capsule_refs=_dedupe(payload.get("interface_capsule_refs", []) or []),
+            subcontract_ref=str(payload.get("subcontract_ref", "")).strip(),
+            local_done_contract=[str(value) for value in payload.get("local_done_contract", []) or []],
+            team_contract=dict(payload.get("team_contract", {}) or {}),
+            coordination_mode=str(payload.get("coordination_mode", "mixed")),
+            status=str(payload.get("status", "PLANNED")),
+        )
+
+
+@dataclass
+class TeamSubContract:
+    """Local contract that keeps a managed team coherent without full graph context."""
+
+    id: str
+    team_id: str
+    purpose: str
+    slice_ids: List[str] = field(default_factory=list)
+    owner_artifacts: List[str] = field(default_factory=list)
+    owned_concepts: List[str] = field(default_factory=list)
+    dependency_team_ids: List[str] = field(default_factory=list)
+    dependency_capsule_refs: List[str] = field(default_factory=list)
+    interface_capsule_refs: List[str] = field(default_factory=list)
+    local_done_contract: List[str] = field(default_factory=list)
+    local_quality_gates: List[Dict[str, Any]] = field(default_factory=list)
+    internal_parallel_groups: List[List[str]] = field(default_factory=list)
+    internal_serial_edges: List[Dict[str, str]] = field(default_factory=list)
+    agent_roles: List[Dict[str, Any]] = field(default_factory=list)
+    context_policy: Dict[str, Any] = field(default_factory=dict)
+    escalation_policy: Dict[str, Any] = field(default_factory=dict)
+    status: str = "PLANNED"
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "team_id": self.team_id,
+            "purpose": self.purpose,
+            "slice_ids": list(self.slice_ids),
+            "owner_artifacts": list(self.owner_artifacts),
+            "owned_concepts": list(self.owned_concepts),
+            "dependency_team_ids": list(self.dependency_team_ids),
+            "dependency_capsule_refs": list(self.dependency_capsule_refs),
+            "interface_capsule_refs": list(self.interface_capsule_refs),
+            "local_done_contract": list(self.local_done_contract),
+            "local_quality_gates": list(self.local_quality_gates),
+            "internal_parallel_groups": [list(group) for group in self.internal_parallel_groups],
+            "internal_serial_edges": list(self.internal_serial_edges),
+            "agent_roles": list(self.agent_roles),
+            "context_policy": dict(self.context_policy),
+            "escalation_policy": dict(self.escalation_policy),
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "TeamSubContract":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            team_id=str(payload.get("team_id", "")).strip(),
+            purpose=str(payload.get("purpose", "")).strip(),
+            slice_ids=_dedupe(payload.get("slice_ids", []) or []),
+            owner_artifacts=_dedupe(payload.get("owner_artifacts", []) or []),
+            owned_concepts=_dedupe(payload.get("owned_concepts", []) or []),
+            dependency_team_ids=_dedupe(payload.get("dependency_team_ids", []) or []),
+            dependency_capsule_refs=_dedupe(payload.get("dependency_capsule_refs", []) or []),
+            interface_capsule_refs=_dedupe(payload.get("interface_capsule_refs", []) or []),
+            local_done_contract=[str(value) for value in payload.get("local_done_contract", []) or []],
+            local_quality_gates=list(payload.get("local_quality_gates", []) or []),
+            internal_parallel_groups=[
+                _dedupe(group) for group in payload.get("internal_parallel_groups", []) or [] if isinstance(group, list)
+            ],
+            internal_serial_edges=list(payload.get("internal_serial_edges", []) or []),
+            agent_roles=list(payload.get("agent_roles", []) or []),
+            context_policy=dict(payload.get("context_policy", {}) or {}),
+            escalation_policy=dict(payload.get("escalation_policy", {}) or {}),
+            status=str(payload.get("status", "PLANNED")),
+        )
+
+
+@dataclass
+class AgentSpec:
+    id: str
+    role: str
+    skills: List[str] = field(default_factory=list)
+    owns: List[str] = field(default_factory=list)
+
+    def to_record(self) -> Dict[str, Any]:
+        return {"id": self.id, "role": self.role, "skills": list(self.skills), "owns": list(self.owns)}
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "AgentSpec":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            role=str(payload.get("role", "")).strip(),
+            skills=_dedupe(payload.get("skills", []) or []),
+            owns=_dedupe(payload.get("owns", []) or []),
+        )
+
+
+@dataclass
+class TeamSpec:
+    id: str
+    slice_id: str
+    feature_team_id: str = ""
+    slice_ids: List[str] = field(default_factory=list)
+    local_contract: Dict[str, Any] = field(default_factory=dict)
+    agents: List[AgentSpec] = field(default_factory=list)
+    workspace: str = ""
+    status: str = "PLANNED"
+    phase: str = "slice.build"
+    current_item_id: str = ""
+    coordination_mode: str = "mixed"
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "slice_id": self.slice_id,
+            "feature_team_id": self.feature_team_id,
+            "slice_ids": list(self.slice_ids),
+            "local_contract": dict(self.local_contract),
+            "agents": [agent.to_record() for agent in self.agents],
+            "workspace": self.workspace,
+            "status": self.status,
+            "phase": self.phase,
+            "current_item_id": self.current_item_id,
+            "coordination_mode": self.coordination_mode,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "TeamSpec":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            slice_id=str(payload.get("slice_id", "")).strip(),
+            feature_team_id=str(payload.get("feature_team_id", "")).strip(),
+            slice_ids=_dedupe(payload.get("slice_ids", []) or []),
+            local_contract=dict(payload.get("local_contract", {}) or {}),
+            agents=[AgentSpec.from_mapping(value) for value in payload.get("agents", []) or []],
+            workspace=str(payload.get("workspace", "")),
+            status=str(payload.get("status", "PLANNED")),
+            phase=str(payload.get("phase", "slice.build")),
+            current_item_id=str(payload.get("current_item_id", "")),
+            coordination_mode=str(payload.get("coordination_mode", "mixed")),
+        )
+
+
+@dataclass
+class TeamStateRecord:
+    """Durable async coordination state for one feature team."""
+
+    team_id: str
+    phase: str = "planned"
+    interface_refs: List[str] = field(default_factory=list)
+    frozen_interfaces: List[str] = field(default_factory=list)
+    waiting_on_interfaces: List[str] = field(default_factory=list)
+    ready_item_ids: List[str] = field(default_factory=list)
+    active_item_ids: List[str] = field(default_factory=list)
+    mailbox: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "team_id": self.team_id,
+            "phase": self.phase,
+            "interface_refs": list(self.interface_refs),
+            "frozen_interfaces": list(self.frozen_interfaces),
+            "waiting_on_interfaces": list(self.waiting_on_interfaces),
+            "ready_item_ids": list(self.ready_item_ids),
+            "active_item_ids": list(self.active_item_ids),
+            "mailbox": list(self.mailbox),
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "TeamStateRecord":
+        payload = dict(payload or {})
+        return cls(
+            team_id=str(payload.get("team_id", "")),
+            phase=str(payload.get("phase", "planned")),
+            interface_refs=_dedupe(payload.get("interface_refs", []) or []),
+            frozen_interfaces=_dedupe(payload.get("frozen_interfaces", []) or []),
+            waiting_on_interfaces=_dedupe(payload.get("waiting_on_interfaces", []) or []),
+            ready_item_ids=_dedupe(payload.get("ready_item_ids", []) or []),
+            active_item_ids=_dedupe(payload.get("active_item_ids", []) or []),
+            mailbox=list(payload.get("mailbox", []) or []),
+        )
+
+
+@dataclass
+class WorkItem:
+    id: str
+    slice_id: str
+    title: str
+    allowed_artifacts: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    kind: str = "implementation"
+    phase: str = "slice.build"
+    team_id: str = ""
+    feature_team_id: str = ""
+    conflict_keys: List[str] = field(default_factory=list)
+    locked_artifacts: List[str] = field(default_factory=list)
+    repair_transaction_id: str = ""
+    status: str = "PENDING"
+    attempts: int = 0
+    diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "slice_id": self.slice_id,
+            "title": self.title,
+            "allowed_artifacts": list(self.allowed_artifacts),
+            "dependencies": list(self.dependencies),
+            "kind": self.kind,
+            "phase": self.phase,
+            "team_id": self.team_id,
+            "feature_team_id": self.feature_team_id,
+            "conflict_keys": list(self.conflict_keys),
+            "locked_artifacts": list(self.locked_artifacts),
+            "repair_transaction_id": self.repair_transaction_id,
+            "status": self.status,
+            "attempts": self.attempts,
+            "diagnostics": list(self.diagnostics),
+            "evidence": list(self.evidence),
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "WorkItem":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            slice_id=str(payload.get("slice_id", "")).strip(),
+            title=str(payload.get("title", "")).strip(),
+            allowed_artifacts=_dedupe(payload.get("allowed_artifacts", []) or []),
+            dependencies=_dedupe(payload.get("dependencies", []) or []),
+            kind=str(payload.get("kind", "implementation")),
+            phase=str(payload.get("phase", "slice.build")),
+            team_id=str(payload.get("team_id", "")),
+            feature_team_id=str(payload.get("feature_team_id", "")),
+            conflict_keys=_dedupe(payload.get("conflict_keys", []) or []),
+            locked_artifacts=_dedupe(payload.get("locked_artifacts", []) or []),
+            repair_transaction_id=str(payload.get("repair_transaction_id", "")),
+            status=str(payload.get("status", "PENDING")),
+            attempts=int(payload.get("attempts", 0) or 0),
+            diagnostics=list(payload.get("diagnostics", []) or []),
+            evidence=[str(value) for value in payload.get("evidence", []) or []],
+        )
+
+
+@dataclass
+class RepairTransaction:
+    id: str
+    failure_fingerprint: str
+    root_invariant: str
+    allowed_artifacts: List[str] = field(default_factory=list)
+    locked_tests: List[str] = field(default_factory=list)
+    patch_plan: List[str] = field(default_factory=list)
+    expected_behavior_delta: str = ""
+    validation_commands: List[List[str]] = field(default_factory=list)
+    pre_patch_artifact_hashes: Dict[str, str] = field(default_factory=dict)
+    last_validation: Dict[str, Any] = field(default_factory=dict)
+    status: str = "OPEN"
+    attempts: int = 0
+    no_progress_count: int = 0
+    evidence: List[str] = field(default_factory=list)
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "failure_fingerprint": self.failure_fingerprint,
+            "root_invariant": self.root_invariant,
+            "allowed_artifacts": list(self.allowed_artifacts),
+            "locked_tests": list(self.locked_tests),
+            "patch_plan": list(self.patch_plan),
+            "expected_behavior_delta": self.expected_behavior_delta,
+            "validation_commands": [list(command) for command in self.validation_commands],
+            "pre_patch_artifact_hashes": dict(self.pre_patch_artifact_hashes),
+            "last_validation": dict(self.last_validation),
+            "status": self.status,
+            "attempts": self.attempts,
+            "no_progress_count": self.no_progress_count,
+            "evidence": list(self.evidence),
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "RepairTransaction":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")).strip(),
+            failure_fingerprint=str(payload.get("failure_fingerprint", "")).strip(),
+            root_invariant=str(payload.get("root_invariant", "")).strip(),
+            allowed_artifacts=_dedupe(payload.get("allowed_artifacts", []) or []),
+            locked_tests=_dedupe(payload.get("locked_tests", []) or []),
+            patch_plan=[str(value) for value in payload.get("patch_plan", []) or []],
+            expected_behavior_delta=str(payload.get("expected_behavior_delta", "")),
+            validation_commands=[
+                [str(part) for part in command]
+                for command in payload.get("validation_commands", []) or []
+                if isinstance(command, list)
+            ],
+            pre_patch_artifact_hashes=dict(payload.get("pre_patch_artifact_hashes", {}) or {}),
+            last_validation=dict(payload.get("last_validation", {}) or {}),
+            status=str(payload.get("status", "OPEN")),
+            attempts=int(payload.get("attempts", 0) or 0),
+            no_progress_count=int(payload.get("no_progress_count", 0) or 0),
+            evidence=[str(value) for value in payload.get("evidence", []) or []],
+        )
+
+
+@dataclass
+class PromotionRecord:
+    id: str
+    run_id: str
+    slice_id: str
+    changed_files: List[str] = field(default_factory=list)
+    owned_files: List[str] = field(default_factory=list)
+    unowned_files: List[str] = field(default_factory=list)
+    missing_files: List[str] = field(default_factory=list)
+    conflicts: List[str] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)
+    team_workspace: str = ""
+    status: str = "PENDING"
+    summary: str = ""
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "slice_id": self.slice_id,
+            "changed_files": list(self.changed_files),
+            "owned_files": list(self.owned_files),
+            "unowned_files": list(self.unowned_files),
+            "missing_files": list(self.missing_files),
+            "conflicts": list(self.conflicts),
+            "evidence": list(self.evidence),
+            "team_workspace": self.team_workspace,
+            "status": self.status,
+            "summary": self.summary,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "PromotionRecord":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")),
+            run_id=str(payload.get("run_id", "")),
+            slice_id=str(payload.get("slice_id", "")),
+            changed_files=_dedupe(payload.get("changed_files", []) or []),
+            owned_files=_dedupe(payload.get("owned_files", []) or []),
+            unowned_files=_dedupe(payload.get("unowned_files", []) or []),
+            missing_files=_dedupe(payload.get("missing_files", []) or []),
+            conflicts=[str(value) for value in payload.get("conflicts", []) or []],
+            evidence=[str(value) for value in payload.get("evidence", []) or []],
+            team_workspace=str(payload.get("team_workspace", "")),
+            status=str(payload.get("status", "PENDING")),
+            summary=str(payload.get("summary", "")),
+        )
+
+
+@dataclass
+class QualityTransactionRecord:
+    """Auditable test+review decision for one slice, repair, or final gate."""
+
+    id: str
+    run_id: str
+    scope: str
+    item_id: str = ""
+    slice_id: str = ""
+    verdict: str = "PENDING"
+    changed_files: List[str] = field(default_factory=list)
+    allowed_artifacts: List[str] = field(default_factory=list)
+    locked_artifacts: List[str] = field(default_factory=list)
+    test_evidence: List[str] = field(default_factory=list)
+    review_evidence: List[str] = field(default_factory=list)
+    diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    team_workspace: str = ""
+    status: str = "PENDING"
+
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "scope": self.scope,
+            "item_id": self.item_id,
+            "slice_id": self.slice_id,
+            "verdict": self.verdict,
+            "changed_files": list(self.changed_files),
+            "allowed_artifacts": list(self.allowed_artifacts),
+            "locked_artifacts": list(self.locked_artifacts),
+            "test_evidence": list(self.test_evidence),
+            "review_evidence": list(self.review_evidence),
+            "diagnostics": list(self.diagnostics),
+            "team_workspace": self.team_workspace,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "QualityTransactionRecord":
+        payload = dict(payload or {})
+        return cls(
+            id=str(payload.get("id", "")),
+            run_id=str(payload.get("run_id", "")),
+            scope=str(payload.get("scope", "")),
+            item_id=str(payload.get("item_id", "")),
+            slice_id=str(payload.get("slice_id", "")),
+            verdict=str(payload.get("verdict", "PENDING")),
+            changed_files=_dedupe(payload.get("changed_files", []) or []),
+            allowed_artifacts=_dedupe(payload.get("allowed_artifacts", []) or []),
+            locked_artifacts=_dedupe(payload.get("locked_artifacts", []) or []),
+            test_evidence=[str(value) for value in payload.get("test_evidence", []) or []],
+            review_evidence=[str(value) for value in payload.get("review_evidence", []) or []],
+            diagnostics=list(payload.get("diagnostics", []) or []),
+            team_workspace=str(payload.get("team_workspace", "")),
+            status=str(payload.get("status", "PENDING")),
+        )
+
+
+@dataclass
+class ReplanRecord:
+    id: str
+    reason: str
+    affected_slices: List[str] = field(default_factory=list)
+    failure_fingerprint: str = ""
+    kernel_delta: Dict[str, Any] = field(default_factory=dict)
     status: str = "OPEN"
 
-    def __post_init__(self) -> None:
-        self.id = str(self.id or "").strip()
-        self.kind = str(self.kind or "interface_delta").strip().lower() or "interface_delta"
-        self.affected_teams = [
-            str(value).strip() for value in self.affected_teams if str(value).strip()
-        ]
-        self.affected_interfaces = [
-            str(value).strip() for value in self.affected_interfaces if str(value).strip()
-        ]
-        self.reason = str(self.reason or "").strip()
-        self.status = str(self.status or "OPEN").strip().upper() or "OPEN"
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "reason": self.reason,
+            "affected_slices": list(self.affected_slices),
+            "failure_fingerprint": self.failure_fingerprint,
+            "kernel_delta": dict(self.kernel_delta),
+            "status": self.status,
+        }
 
     @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "ContractDelta":
+    def from_mapping(cls, payload: Dict[str, Any]) -> "ReplanRecord":
+        payload = dict(payload or {})
         return cls(
             id=str(payload.get("id", "")),
-            kind=str(payload.get("kind", "interface_delta")),
-            affected_teams=list(payload.get("affected_teams", [])),
-            affected_interfaces=list(payload.get("affected_interfaces", [])),
             reason=str(payload.get("reason", "")),
+            affected_slices=_dedupe(payload.get("affected_slices", []) or []),
+            failure_fingerprint=str(payload.get("failure_fingerprint", "")),
+            kernel_delta=dict(payload.get("kernel_delta", {}) or {}),
             status=str(payload.get("status", "OPEN")),
         )
 
+
+@dataclass
+class LLMTelemetry:
+    backend: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    tool_calls: int = 0
+    tool_iterations: int = 0
+    timeouts: int = 0
+    errors: int = 0
+
     def to_record(self) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"id": self.id, "kind": self.kind, "status": self.status}
-        if self.affected_teams:
-            payload["affected_teams"] = list(self.affected_teams)
-        if self.affected_interfaces:
-            payload["affected_interfaces"] = list(self.affected_interfaces)
-        if self.reason:
-            payload["reason"] = self.reason
-        return payload
+        return {
+            "backend": self.backend,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "tool_calls": self.tool_calls,
+            "tool_iterations": self.tool_iterations,
+            "timeouts": self.timeouts,
+            "errors": self.errors,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "LLMTelemetry":
+        payload = dict(payload or {})
+        return cls(
+            backend=str(payload.get("backend", "")),
+            prompt_tokens=int(payload.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(payload.get("completion_tokens", 0) or 0),
+            tool_calls=int(payload.get("tool_calls", 0) or 0),
+            tool_iterations=int(payload.get("tool_iterations", 0) or 0),
+            timeouts=int(payload.get("timeouts", 0) or 0),
+            errors=int(payload.get("errors", 0) or 0),
+        )
 
 
 @dataclass
 class ContractSpec:
-    goals: List[str]
-    work_scopes: List[WorkScope]
+    goal: str
+    product_kernel: ProductKernel
+    feature_slices: List[FeatureSlice]
     work_items: List[WorkItem]
-    requirements: RequirementSpec | Dict[str, Any] | None = None
-    architecture: ArchitectureSpec | Dict[str, Any] | None = None
-    milestones: List[MilestoneSpec | Dict[str, Any]] = field(default_factory=list)
-    phase_plan: List[PhaseContract | Dict[str, Any]] = field(default_factory=list)
-    interfaces: List[InterfaceSpec | Dict[str, Any]] = field(default_factory=list)
-    deltas: List[ContractDelta | Dict[str, Any]] = field(default_factory=list)
-    team_gates: List[TeamGateSpec] = field(default_factory=list)
-    final_gate: Optional[FinalGateSpec] = None
-    acceptance_criteria: List[str] = field(default_factory=list)
-    execution_policy: Dict[str, Any] = field(default_factory=dict)
-    risk_policy: Dict[str, Any] = field(default_factory=dict)
+    required_artifacts: List[str]
+    canonical_substrate: CanonicalSubstrate = field(default_factory=CanonicalSubstrate)
+    test_artifacts: List[str] = field(default_factory=list)
+    feature_teams: List[FeatureTeam] = field(default_factory=list)
+    team_subcontracts: List[TeamSubContract] = field(default_factory=list)
+    interface_capsules: List[InterfaceCapsule] = field(default_factory=list)
+    teams: List[TeamSpec] = field(default_factory=list)
+    team_states: List[TeamStateRecord] = field(default_factory=list)
+    promotions: List[PromotionRecord] = field(default_factory=list)
+    quality_transactions: List[QualityTransactionRecord] = field(default_factory=list)
+    repair_transactions: List[RepairTransaction] = field(default_factory=list)
+    replans: List[ReplanRecord] = field(default_factory=list)
+    llm_telemetry: LLMTelemetry = field(default_factory=LLMTelemetry)
     version: str = CONTRACT_VERSION
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    verification_policy: Dict[str, Any] = field(default_factory=dict)
-    test_ownership: Dict[str, Any] = field(default_factory=dict)
-    owner_hints: Dict[str, str] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        self.version = str(self.version or CONTRACT_VERSION)
-        self.goals = [str(value).strip() for value in self.goals if str(value).strip()]
-        self.work_scopes = [
-            scope if isinstance(scope, WorkScope) else WorkScope.from_mapping(scope)
-            for scope in self.work_scopes
-        ]
-        self.work_items = [
-            item if isinstance(item, WorkItem) else WorkItem.from_mapping(item)
-            for item in self.work_items
-        ]
-        if self.requirements is None:
-            self.requirements = RequirementSpec(
-                summary=self.goals[0] if self.goals else "",
-                delivery_type=str(self.metadata.get("delivery_type", "coding") if hasattr(self, "metadata") else "coding"),
-            )
-        elif not isinstance(self.requirements, RequirementSpec):
-            self.requirements = RequirementSpec.from_mapping(self.requirements)
-        if self.architecture is None:
-            self.architecture = ArchitectureSpec()
-        elif not isinstance(self.architecture, ArchitectureSpec):
-            self.architecture = ArchitectureSpec.from_mapping(self.architecture)
-        self.milestones = [
-            milestone if isinstance(milestone, MilestoneSpec) else MilestoneSpec.from_mapping(milestone)
-            for milestone in self.milestones
-            if isinstance(milestone, (MilestoneSpec, dict))
-        ]
-        self.phase_plan = [
-            phase if isinstance(phase, PhaseContract) else PhaseContract.from_mapping(phase)
-            for phase in self.phase_plan
-            if isinstance(phase, (PhaseContract, dict))
-        ]
-        self.interfaces = [
-            interface if isinstance(interface, InterfaceSpec) else InterfaceSpec.from_mapping(interface)
-            for interface in self.interfaces
-            if isinstance(interface, (InterfaceSpec, dict))
-        ]
-        self.deltas = [
-            delta if isinstance(delta, ContractDelta) else ContractDelta.from_mapping(delta)
-            for delta in self.deltas
-            if isinstance(delta, (ContractDelta, dict))
-        ]
-        self.team_gates = [
-            gate if isinstance(gate, TeamGateSpec) else TeamGateSpec.from_mapping(gate)
-            for gate in self.team_gates
-        ]
-        if self.final_gate is not None and not isinstance(self.final_gate, FinalGateSpec):
-            self.final_gate = FinalGateSpec.from_mapping(self.final_gate)
-        self.acceptance_criteria = [
-            str(value).strip() for value in self.acceptance_criteria if str(value).strip()
-        ]
-        self.execution_policy = dict(self.execution_policy or {})
-        self.risk_policy = dict(self.risk_policy or {})
-        self.verification_policy = dict(self.verification_policy or {})
-        self.test_ownership = dict(self.test_ownership or {})
-        self.owner_hints = {
-            str(path).replace("\\", "/").strip(): str(scope).strip()
-            for path, scope in dict(self.owner_hints or {}).items()
-            if str(path).strip() and str(scope).strip()
-        }
-        if not self.owner_hints:
-            self.owner_hints = self._derive_owner_hints()
-        self.metadata = dict(self.metadata or {})
+    def validate(self) -> None:
+        if not self.goal.strip():
+            raise ContractValidationError("contract goal is required")
+        if not self.feature_slices:
+            raise ContractValidationError("at least one feature slice is required")
+        owners: Dict[str, str] = {}
+        for feature_slice in self.feature_slices:
+            if not feature_slice.id:
+                raise ContractValidationError("feature slice id is required")
+            for artifact in feature_slice.owner_artifacts:
+                previous = owners.get(artifact)
+                if previous and previous != feature_slice.id:
+                    raise ContractValidationError(f"artifact {artifact} has multiple owners: {previous}, {feature_slice.id}")
+                owners[artifact] = feature_slice.id
+        missing = [artifact for artifact in self.required_artifacts if artifact not in owners and artifact not in self.test_artifacts]
+        if missing:
+            raise ContractValidationError(f"required artifacts are not owned by a slice: {missing}")
 
-    @classmethod
-    def from_mapping(cls, payload: Dict[str, Any]) -> "ContractSpec":
-        payload = cls._kernel_payload(payload)
-        return cls(
-            version=str(payload.get("version", CONTRACT_VERSION)),
-            goals=list(payload.get("goals", [])),
-            work_scopes=[WorkScope.from_mapping(item) for item in payload.get("work_scopes", [])],
-            work_items=[WorkItem.from_mapping(item) for item in payload.get("work_items", [])],
-            requirements=RequirementSpec.from_mapping(payload.get("requirements")),
-            architecture=ArchitectureSpec.from_mapping(payload.get("architecture")),
-            milestones=[MilestoneSpec.from_mapping(item) for item in payload.get("milestones", [])],
-            phase_plan=[PhaseContract.from_mapping(item) for item in payload.get("phase_plan", [])],
-            interfaces=[InterfaceSpec.from_mapping(item) for item in payload.get("interfaces", [])],
-            deltas=[ContractDelta.from_mapping(item) for item in payload.get("deltas", [])],
-            team_gates=[TeamGateSpec.from_mapping(item) for item in payload.get("team_gates", [])],
-            final_gate=FinalGateSpec.from_mapping(payload.get("final_gate")) if payload.get("final_gate") else None,
-            acceptance_criteria=list(payload.get("acceptance_criteria", [])),
-            execution_policy=dict(payload.get("execution_policy", {})),
-            risk_policy=dict(payload.get("risk_policy", {})),
-            verification_policy=dict(payload.get("verification_policy", {})),
-            test_ownership=dict(payload.get("test_ownership", {})),
-            owner_hints=dict(payload.get("owner_hints", {})),
-            metadata=dict(payload.get("metadata", {})),
-        )
-
-    @classmethod
-    def _kernel_payload(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
-        raw = dict(payload or {})
-        kernel = raw.get("kernel")
-        if isinstance(kernel, dict):
-            merged = dict(kernel)
-            for key in ("requirements", "architecture", "milestones", "interfaces", "deltas"):
-                if key in raw and key not in merged:
-                    merged[key] = raw[key]
-            if "phase_plan" in raw and "phase_plan" not in merged:
-                merged["phase_plan"] = raw["phase_plan"]
-            return merged
-        if any(key in raw for key in ("requirements", "intent", "teams", "work", "gates")) and "work_scopes" not in raw:
-            return cls._projection_to_kernel(raw)
-        return raw
-
-    @staticmethod
-    def _projection_to_kernel(payload: Dict[str, Any]) -> Dict[str, Any]:
-        requirements = dict(payload.get("requirements", {}) or {})
-        intent = {
-            "summary": requirements.get("summary", ""),
-            "delivery_type": requirements.get("delivery_type", "coding"),
-            "goals": list(payload.get("goals", []) or []),
-            "acceptance": list(payload.get("acceptance_criteria", []) or []),
-        }
-        gates = dict(payload.get("gates", {}) or {})
-        policy = dict(payload.get("policy", {}) or {})
-        teams = list(payload.get("teams", []) or [])
-        work = list(payload.get("work", []) or [])
-        goals = list(intent.get("goals", []) or [])
-        summary = str(intent.get("summary", "") or "").strip()
-        if not goals and summary:
-            goals = [summary]
-        work_scopes: List[Dict[str, Any]] = [
-            {"id": "root", "type": "root", "label": "Root work scope"}
-        ]
-        for team in teams:
-            if not isinstance(team, dict):
-                continue
-            scope_id = str(team.get("id", "")).strip()
-            if not scope_id:
-                continue
-            work_scopes.append(
-                {
-                    "id": scope_id,
-                    "type": team.get("type") or team.get("kind") or "custom",
-                    "label": team.get("label", scope_id),
-                    "parent_scope": "root",
-                    "artifacts": list(team.get("owns", []) or team.get("artifacts", []) or []),
-                    "interfaces": list(team.get("interfaces", []) or []),
-                    "interface_stability": team.get("interface_stability", "stable"),
-                }
-            )
-        if gates.get("final"):
-            work_scopes.append(
-                {
-                    "id": "integration",
-                    "type": "integration",
-                    "label": "System integration gate",
-                    "parent_scope": "root",
-                }
-            )
-        work_items: List[Dict[str, Any]] = []
-        owner_hints: Dict[str, str] = {}
-        for artifact, owner in dict(payload.get("owner_hints", {}) or {}).items():
-            normalized = str(artifact).replace("\\", "/").strip()
-            scope_id = str(owner).strip()
-            if normalized and scope_id:
-                owner_hints[normalized] = scope_id
-        for team in teams:
-            if not isinstance(team, dict):
-                continue
-            scope_id = str(team.get("id", "")).strip()
-            if not scope_id:
-                continue
-            for artifact in list(team.get("owns", []) or team.get("artifacts", []) or []):
-                normalized = str(artifact).replace("\\", "/").strip()
-                if normalized:
-                    owner_hints[normalized] = scope_id
-        for item in work:
-            if not isinstance(item, dict):
-                continue
-            item_id = str(item.get("id", "")).strip()
-            team_id = str(item.get("team") or item.get("scope_id") or "").strip()
-            if not item_id or not team_id:
-                continue
-            work_items.append(
-                {
-                    "id": item_id,
-                    "kind": item.get("kind", "coding"),
-                    "title": item.get("title", item_id),
-                    "owner_profile": item.get("owner_profile", "Backend_Engineer"),
-                    "scope_id": team_id,
-                    "target_artifacts": list(item.get("artifacts", []) or item.get("target_artifacts", []) or []),
-                    "acceptance_criteria": list(item.get("acceptance", []) or item.get("acceptance_criteria", []) or []),
-                    "depends_on": list(item.get("depends_on", []) or []),
-                    "inputs": dict(item.get("inputs", {}) or {}),
-                }
-            )
-            for artifact in list(item.get("artifacts", []) or item.get("target_artifacts", []) or []):
-                normalized = str(artifact).replace("\\", "/").strip()
-                if normalized and team_id:
-                    owner_hints.setdefault(normalized, team_id)
-        return {
-            "version": str(payload.get("version", CONTRACT_VERSION)),
-            "goals": goals,
-            "work_scopes": work_scopes,
-            "work_items": work_items,
-            "team_gates": list(gates.get("team", []) or []),
-            "final_gate": gates.get("final"),
-            "acceptance_criteria": list(intent.get("acceptance", []) or []),
-            "execution_policy": dict(policy.get("execution", {}) or {}),
-            "risk_policy": dict(policy.get("risk", {}) or {}),
-            "owner_hints": owner_hints,
-            "requirements": requirements,
-            "architecture": dict(payload.get("architecture", {}) or {}),
-            "milestones": list(payload.get("milestones", []) or []),
-            "phase_plan": list(payload.get("phase_plan", []) or []),
-            "interfaces": list(payload.get("interfaces", []) or []),
-            "deltas": list(payload.get("deltas", []) or []),
-            "metadata": {
-                "task_intent": summary,
-                "delivery_type": intent.get("delivery_type", "coding"),
-                "architecture": str((payload.get("architecture") or {}).get("name", "milestone-orchestrated-contract-v8")),
-            },
-        }
-
-    def to_record(self) -> Dict[str, Any]:
-        payload = {
-            "version": self.version,
-            "goals": list(self.goals),
-            "requirements": self.requirements.to_record() if isinstance(self.requirements, RequirementSpec) else {},
-            "architecture": self.architecture.to_record() if isinstance(self.architecture, ArchitectureSpec) else {},
-            "milestones": [milestone.to_record() for milestone in self.milestones],
-            "phase_plan": self._public_phase_plan(),
-            "interfaces": [interface.to_record() for interface in self.interfaces],
-            "work_scopes": [scope.to_record() for scope in self.work_scopes],
-            "work_items": [item.to_contract_record() for item in self.work_items],
-        }
-        if self.deltas:
-            payload["deltas"] = [delta.to_record() for delta in self.deltas]
-        if self.team_gates:
-            payload["team_gates"] = [gate.to_record() for gate in self.team_gates]
-        if self.final_gate is not None:
-            payload["final_gate"] = self.final_gate.to_record()
-        if self.acceptance_criteria:
-            payload["acceptance_criteria"] = list(self.acceptance_criteria)
-        execution_policy = self._compact_execution_policy()
-        if execution_policy:
-            payload["execution_policy"] = execution_policy
-        risk_policy = dict(self.risk_policy)
-        if risk_policy and risk_policy != {"ops_default": "approval_required"}:
-            payload["risk_policy"] = risk_policy
-        if self.verification_policy:
-            payload["verification_policy"] = dict(self.verification_policy)
-        if self.test_ownership:
-            payload["test_ownership"] = dict(self.test_ownership)
-        if self.owner_hints:
-            payload["owner_hints"] = dict(sorted(self.owner_hints.items()))
-        metadata = self._compact_metadata()
-        if metadata:
-            payload["metadata"] = metadata
-        return payload
-
-    def _derive_owner_hints(self) -> Dict[str, str]:
-        hints: Dict[str, str] = {}
-        for scope in self.work_scopes:
-            if scope.id in {"root", "integration"}:
-                continue
-            for artifact in scope.artifacts:
-                normalized = str(artifact).replace("\\", "/").strip()
-                if normalized:
-                    hints[normalized] = scope.id
-        for item in self.work_items:
-            if item.scope_id in {"root", "integration"}:
-                continue
-            for artifact in item.target_artifacts:
-                normalized = str(artifact).replace("\\", "/").strip()
-                if normalized and not normalized.startswith(".contractcoding/interfaces/"):
-                    hints.setdefault(normalized, item.scope_id)
-        return hints
-
-    def to_public_record(self) -> Dict[str, Any]:
-        """Return the V8 phase-contract projection written to contract.json."""
-
-        kernel = dict(self.to_record())
-        for duplicated in ("requirements", "architecture", "milestones", "phase_plan", "interfaces", "deltas"):
-            kernel.pop(duplicated, None)
-        return {
-            "version": self.version,
-            "requirements": self._public_requirements(),
-            "architecture": self._public_architecture(),
-            "milestones": [milestone.to_record() for milestone in self.milestones],
-            "phase_plan": self._public_phase_plan(),
-            "teams": self._public_teams(),
-            "interfaces": [interface.to_record() for interface in self.interfaces],
-            "work": self._public_work(),
-            "gates": self._public_gates(),
-            "deltas": [delta.to_record() for delta in self.deltas],
-            "policy": self._public_policy(),
-            "kernel": kernel,
-        }
-
-    def _public_requirements(self) -> Dict[str, Any]:
-        if isinstance(self.requirements, RequirementSpec):
-            return self.requirements.to_record()
-        return self._public_intent()
-
-    def _public_architecture(self) -> Dict[str, Any]:
-        if isinstance(self.architecture, ArchitectureSpec):
-            return self.architecture.to_record()
-        return {"status": "DRAFT"}
-
-    def _public_intent(self) -> Dict[str, Any]:
-        return {
-            "summary": self.metadata.get("task_intent") or (self.goals[0] if self.goals else ""),
-            "delivery_type": self.metadata.get("delivery_type", "coding"),
-            "goals": list(self.goals),
-            **({"acceptance": list(self.acceptance_criteria)} if self.acceptance_criteria else {}),
-        }
-
-    def _public_teams(self) -> List[Dict[str, Any]]:
-        items_by_scope: Dict[str, List[WorkItem]] = {}
-        for item in self.work_items:
-            items_by_scope.setdefault(item.scope_id, []).append(item)
-        teams: List[Dict[str, Any]] = []
-        for scope in self.work_scopes:
-            if scope.id in {"root", "integration"}:
-                continue
-            owns = list(scope.artifacts)
-            if not owns:
-                owns = [
-                    artifact
-                    for item in items_by_scope.get(scope.id, [])
-                    for artifact in item.target_artifacts
-                    if not artifact.startswith(".contractcoding/interfaces/")
-                ]
-            depends_on = self._team_dependencies(scope.id, items_by_scope)
-            payload: Dict[str, Any] = {
-                "id": scope.id,
-                "type": scope.type,
-                "label": scope.label,
-                "owns": self._dedupe(owns),
-            }
-            if depends_on:
-                payload["depends_on"] = depends_on
-            interfaces = [
-                interface
-                for interface in scope.interfaces
-                if interface.get("type") != "scope_artifacts"
-            ]
-            if interfaces:
-                payload["interfaces"] = interfaces
-            if scope.interface_stability != "stable":
-                payload["interface_stability"] = scope.interface_stability
-            team_state = self._team_freeze_state(scope.id)
-            if team_state != "READY_FOR_BUILD":
-                payload["freeze_state"] = team_state
-            non_default_team_policy = {
-                key: value
-                for key, value in scope.team_policy.items()
-                if key not in {"team_kind", "workspace_plane"} or value not in {"coding", "worktree", "sandbox", "workspace"}
-            }
-            if non_default_team_policy:
-                payload["team_policy"] = non_default_team_policy
-            if scope.promotion_policy and scope.promotion_policy != {"mode": "after_team_gate"}:
-                payload["promotion_policy"] = dict(scope.promotion_policy)
-            teams.append(payload)
-        return teams
-
-    def _public_phase_plan(self) -> List[Dict[str, Any]]:
-        phases: List[Dict[str, Any]] = []
-        for phase in self.phase_plan:
-            payload: Dict[str, Any] = {
-                "phase_id": phase.phase_id,
-                "goal": phase.goal,
-                "mode": phase.mode,
-                "status": phase.status,
-            }
-            if phase.entry_conditions:
-                payload["entry_conditions"] = list(phase.entry_conditions)
-            if phase.teams_in_scope:
-                payload["teams_in_scope"] = list(phase.teams_in_scope)
-            if phase.deliverables:
-                payload["deliverables"] = list(phase.deliverables[:8])
-            if isinstance(phase.phase_gate, PhaseGateSpec):
-                checks = list(phase.phase_gate.checks[:6])
-                if checks:
-                    payload["phase_gate"] = {"checks": checks}
-            phases.append(payload)
-        return phases
-
-    def _team_freeze_state(self, scope_id: str) -> str:
-        if scope_id in {"root", "integration"}:
-            return "DRAFT"
-        interfaces = self.interfaces_for_scope(scope_id)
-        if not interfaces:
-            return "READY_FOR_BUILD"
-        if all(interface.status in {"FROZEN", "IMPLEMENTED", "VERIFIED"} for interface in interfaces):
-            return "READY_FOR_BUILD"
-        return "READY_FOR_INTERFACE"
-
-    @staticmethod
-    def _team_dependencies(scope_id: str, items_by_scope: Dict[str, List[WorkItem]]) -> List[str]:
-        dependencies: List[str] = []
-        for item in items_by_scope.get(scope_id, []):
-            for interface in item.required_interfaces:
-                dep_scope = str(interface.get("from_scope") or interface.get("scope") or "").strip()
-                if dep_scope and dep_scope != scope_id:
-                    dependencies.append(dep_scope)
-        return ContractSpec._dedupe(dependencies)
-
-    def _public_work(self) -> List[Dict[str, Any]]:
-        work: List[Dict[str, Any]] = []
-        for item in self.work_items:
-            payload: Dict[str, Any] = {
-                "id": item.id,
-                "team": item.scope_id,
-                "kind": item.kind,
-                "title": item.title,
-                "artifacts": list(item.target_artifacts),
-            }
-            if item.depends_on:
-                payload["depends_on"] = list(item.depends_on)
-            if item.acceptance_criteria:
-                payload["acceptance"] = list(item.acceptance_criteria)
-            if item.team_role_hint and item.team_role_hint not in {"implementation_worker"}:
-                payload["team_role_hint"] = item.team_role_hint
-            derived_conflicts = [f"artifact:{artifact}" for artifact in item.target_artifacts]
-            if item.conflict_keys and item.conflict_keys != derived_conflicts:
-                payload["conflict_keys"] = list(item.conflict_keys)
-            if item.serial_group:
-                payload["serial_group"] = item.serial_group
-            if item.execution_mode and item.execution_mode != "auto":
-                payload["execution_mode"] = item.execution_mode
-            phase_id = str(item.inputs.get("phase_id", "") or item.context_policy.get("phase_id", "")).strip()
-            if phase_id:
-                payload["phase_id"] = phase_id
-            work.append(payload)
-        return work
-
-    def _public_gates(self) -> Dict[str, Any]:
-        gates: Dict[str, Any] = {}
-        if self.team_gates:
-            gates["team"] = [self._public_team_gate(gate) for gate in self.team_gates]
-        if self.final_gate is not None:
-            gates["final"] = self._public_final_gate()
-        return gates
-
-    @staticmethod
-    def _public_team_gate(gate: TeamGateSpec) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"scope_id": gate.scope_id}
-        if gate.test_artifacts:
-            payload["test_artifacts"] = list(gate.test_artifacts)
-        if gate.test_plan:
-            payload["test_plan"] = dict(gate.test_plan)
-        if not gate.required:
-            payload["required"] = False
-        return payload
-
-    def _public_final_gate(self) -> Dict[str, Any]:
-        assert self.final_gate is not None
-        final = self.final_gate
-        payload: Dict[str, Any] = {
-            "required_artifacts": list(final.required_artifacts),
-            "requires_tests": final.requires_tests,
-        }
-        if final.package_roots:
-            payload["package_roots"] = list(final.package_roots)
-        if final.final_acceptance_scenarios:
-            payload["final_acceptance_scenarios"] = list(final.final_acceptance_scenarios)
-        return payload
-
-    def _public_policy(self) -> Dict[str, Any]:
-        policy: Dict[str, Any] = {}
-        execution = {
-            key: value
-            for key, value in self._compact_execution_policy().items()
-            if key not in {"context_max_chars", "autonomy_guardrails"}
-        }
-        if execution:
-            policy["execution"] = execution
-        risk = dict(self.risk_policy)
-        if risk and risk != {"ops_default": "approval_required"}:
-            policy["risk"] = risk
-        context_max = self.execution_policy.get("context_max_chars")
-        if context_max:
-            policy.setdefault("context", {})["max_chars"] = context_max
-        guardrails = self.execution_policy.get("autonomy_guardrails")
-        if guardrails:
-            policy.setdefault("recovery", {}).update(dict(guardrails))
-        return policy
-
-    @staticmethod
-    def _dedupe(values: Iterable[str]) -> List[str]:
-        seen = set()
-        output: List[str] = []
-        for value in values:
-            normalized = str(value).strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            output.append(normalized)
-        return output
-
-    def _compact_execution_policy(self) -> Dict[str, Any]:
-        defaults = {
-            "max_parallel_teams": 4,
-            "max_parallel_items_per_team": 4,
-            "default_execution_plane": "sandbox",
-        }
-        return {
-            key: value
-            for key, value in self.execution_policy.items()
-            if defaults.get(key) != value
-        }
-
-    def _compact_metadata(self) -> Dict[str, Any]:
-        if not self.metadata:
-            return {}
-        keep = {
-            "planner",
-            "planner_mode",
-            "revision",
-            "replan_feedback",
-            "task_intent",
-            "delivery_type",
-            "architecture",
-            "planning_pipeline",
-            "plan_critic",
-            "replan_critic",
-        }
-        metadata = {key: value for key, value in self.metadata.items() if key in keep and value not in (None, "", [], {})}
-        for critic_key in ("plan_critic", "replan_critic"):
-            if critic_key in metadata and isinstance(metadata[critic_key], dict):
-                critic = dict(metadata[critic_key])
-                metadata[critic_key] = {
-                    "accepted": bool(critic.get("accepted", False)),
-                    "context": str(critic.get("context", "")),
-                    "errors": list(critic.get("errors", []) or [])[:8],
-                    "warnings": list(critic.get("warnings", []) or [])[:8],
-                }
-        profile = dict(self.metadata.get("planning_profile", {}))
-        if profile:
-            compact_profile = {
-                key: profile[key]
-                for key in ("domain", "complexity", "rationale")
-                if key in profile and profile[key] not in (None, "", [], {})
-            }
-            if compact_profile:
-                metadata["planning_profile"] = compact_profile
-        large_project = dict(self.metadata.get("large_project", {}))
-        if large_project:
-            metadata["large_project"] = {
-                key: large_project[key]
-                for key in ("artifact_count", "scope_count", "scope_order")
-                if key in large_project
-            }
-        return metadata
-
-    def to_json(self) -> str:
-        return _json_dumps(self.to_public_record()) + "\n"
-
-    def content_hash(self) -> str:
-        payload = json.dumps(self.to_record(), ensure_ascii=False, sort_keys=True)
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    def scope_by_id(self) -> Dict[str, WorkScope]:
-        return {scope.id: scope for scope in self.work_scopes}
+    def slice_by_id(self) -> Dict[str, FeatureSlice]:
+        return {feature_slice.id: feature_slice for feature_slice in self.feature_slices}
 
     def item_by_id(self) -> Dict[str, WorkItem]:
         return {item.id: item for item in self.work_items}
 
-    def interfaces_for_scope(self, scope_id: str) -> List[InterfaceSpec]:
-        return [
-            interface
-            for interface in self.interfaces
-            if isinstance(interface, InterfaceSpec)
-            and interface.owner_team == scope_id
-        ]
+    def feature_team_by_id(self) -> Dict[str, FeatureTeam]:
+        return {team.id: team for team in self.feature_teams}
 
-    def critical_interfaces(self) -> List[InterfaceSpec]:
-        return [
-            interface
-            for interface in self.interfaces
-            if isinstance(interface, InterfaceSpec) and interface.critical
-        ]
+    def team_subcontract_by_id(self) -> Dict[str, TeamSubContract]:
+        return {subcontract.id: subcontract for subcontract in self.team_subcontracts}
 
-    def team_interface_ready(self, scope_id: str) -> bool:
-        interfaces = self.interfaces_for_scope(scope_id)
-        if not interfaces:
-            return True
-        return all(interface.status in self.build_ready_interface_statuses() for interface in interfaces)
+    def team_subcontract_by_team_id(self) -> Dict[str, TeamSubContract]:
+        return {subcontract.team_id: subcontract for subcontract in self.team_subcontracts}
 
-    def critical_interfaces_frozen(self) -> bool:
-        critical = self.critical_interfaces()
-        if not critical:
-            return True
-        return all(interface.status in self.build_ready_interface_statuses() for interface in critical)
+    def interface_capsule_by_id(self) -> Dict[str, InterfaceCapsule]:
+        return {capsule.id: capsule for capsule in self.interface_capsules}
 
-    @staticmethod
-    def build_ready_interface_statuses() -> set[str]:
-        return {"FROZEN", "IMPLEMENTED", "VERIFIED"}
+    def interface_capsule_by_team_id(self) -> Dict[str, InterfaceCapsule]:
+        return {capsule.team_id: capsule for capsule in self.interface_capsules}
 
-    def validate(self) -> None:
-        if self.version not in SUPPORTED_CONTRACT_VERSIONS:
-            raise ContractValidationError(f"Unsupported contract version: {self.version}")
-        if not self.goals:
-            raise ContractValidationError("Contract must include at least one goal.")
-        if not self.work_scopes:
-            raise ContractValidationError("Contract must include at least one work scope.")
-        if not self.work_items:
-            raise ContractValidationError("Contract must include at least one work item.")
+    def to_record(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "goal": self.goal,
+            "product_kernel": self.product_kernel.to_record(),
+            "canonical_substrate": self.canonical_substrate.to_record(),
+            "feature_slices": [feature_slice.to_record() for feature_slice in self.feature_slices],
+            "work_items": [item.to_record() for item in self.work_items],
+            "required_artifacts": list(self.required_artifacts),
+            "test_artifacts": list(self.test_artifacts),
+            "feature_teams": [team.to_record() for team in self.feature_teams],
+            "team_subcontracts": [subcontract.to_record() for subcontract in self.team_subcontracts],
+            "interface_capsules": [capsule.to_record() for capsule in self.interface_capsules],
+            "teams": [team.to_record() for team in self.teams],
+            "team_states": [state.to_record() for state in self.team_states],
+            "promotions": [promotion.to_record() for promotion in self.promotions],
+            "quality_transactions": [transaction.to_record() for transaction in self.quality_transactions],
+            "repair_transactions": [transaction.to_record() for transaction in self.repair_transactions],
+            "replans": [replan.to_record() for replan in self.replans],
+            "llm_telemetry": self.llm_telemetry.to_record(),
+        }
 
-        scope_ids = set()
-        for scope in self.work_scopes:
-            if scope.id in scope_ids:
-                raise ContractValidationError(f"Duplicate work scope id: {scope.id}")
-            scope_ids.add(scope.id)
+    def to_json(self) -> str:
+        return json.dumps(self.to_record(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
-        item_ids = set()
-        for item in self.work_items:
-            if item.id in item_ids:
-                raise ContractValidationError(f"Duplicate work item id: {item.id}")
-            item_ids.add(item.id)
-            if item.scope_id not in scope_ids:
-                raise ContractValidationError(
-                    f"Work item {item.id} references unknown scope {item.scope_id}."
-                )
-            if not item.acceptance_criteria and not self.acceptance_criteria:
-                raise ContractValidationError(
-                    f"Work item {item.id} must include acceptance criteria."
-                )
-
-        for item in self.work_items:
-            missing = [dependency for dependency in item.depends_on if dependency not in item_ids]
-            if missing:
-                raise ContractValidationError(
-                    f"Work item {item.id} depends on unknown item(s): {', '.join(missing)}"
-                )
-
-        gate_scopes = set()
-        for gate in self.team_gates:
-            if gate.scope_id in gate_scopes:
-                raise ContractValidationError(f"Duplicate team gate for scope: {gate.scope_id}")
-            gate_scopes.add(gate.scope_id)
-            if gate.scope_id not in scope_ids:
-                raise ContractValidationError(f"Team gate references unknown scope {gate.scope_id}.")
-
-        interface_ids = set()
-        for interface in self.interfaces:
-            if not interface.id:
-                raise ContractValidationError("Interface spec must include an id.")
-            if interface.id in interface_ids:
-                raise ContractValidationError(f"Duplicate interface id: {interface.id}")
-            interface_ids.add(interface.id)
-            if interface.owner_team and interface.owner_team not in scope_ids:
-                raise ContractValidationError(
-                    f"Interface {interface.id} references unknown owner team {interface.owner_team}."
-                )
-
-        phase_ids = set()
-        for phase in self.phase_plan:
-            if not phase.phase_id:
-                raise ContractValidationError("Phase contract must include a phase_id.")
-            if phase.phase_id in phase_ids:
-                raise ContractValidationError(f"Duplicate phase id: {phase.phase_id}")
-            phase_ids.add(phase.phase_id)
-            missing_teams = [
-                team
-                for team in phase.teams_in_scope
-                if team not in scope_ids and team not in {"integration", "phase"}
-            ]
-            if missing_teams:
-                raise ContractValidationError(
-                    f"Phase {phase.phase_id} references unknown team(s): {', '.join(missing_teams)}"
-                )
-
-        self._validate_acyclic(item_ids)
-
-    def _validate_acyclic(self, item_ids: Iterable[str]) -> None:
-        graph = {item.id: list(item.depends_on) for item in self.work_items}
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def visit(item_id: str, path: List[str]) -> None:
-            if item_id in visited:
-                return
-            if item_id in visiting:
-                cycle = " -> ".join([*path, item_id])
-                raise ContractValidationError(f"Work item dependency cycle detected: {cycle}")
-            visiting.add(item_id)
-            for dependency in graph.get(item_id, []):
-                visit(dependency, [*path, item_id])
-            visiting.remove(item_id)
-            visited.add(item_id)
-
-        for item_id in item_ids:
-            visit(item_id, [])
-
-    def render_markdown(self) -> str:
-        public = self.to_public_record()
-        requirements = public.get("requirements", {})
-        lines = ["# ContractCoding Contract V8", "", f"- Contract hash: `{self.content_hash()}`", ""]
-        lines.append("## Requirements")
-        lines.append(f"- Status: {requirements.get('status', 'FROZEN')}")
-        lines.append(f"- Summary: {requirements.get('summary', '')}")
-        lines.append(f"- Delivery type: {requirements.get('delivery_type', 'coding')}")
-        if self.goals:
-            lines.append("- Goals:")
-            for goal in self.goals:
-                lines.append(f"  - {goal}")
-        if requirements.get("acceptance_scenarios"):
-            lines.append("- Acceptance scenarios:")
-            for scenario in requirements["acceptance_scenarios"]:
-                if isinstance(scenario, dict):
-                    lines.append(f"  - {scenario.get('id', 'scenario')}: {scenario.get('description', '')}")
-                else:
-                    lines.append(f"  - {scenario}")
-        lines.append("")
-        if public.get("phase_plan"):
-            lines.append("## Phase Plan")
-            for phase in public.get("phase_plan", []):
-                teams = ", ".join(phase.get("teams_in_scope", [])) or "none"
-                check = "x" if phase.get("status") == "PASSED" else " "
-                lines.append(
-                    f"- [{check}] {phase.get('phase_id')}: {phase.get('goal', '')} "
-                    f"({phase.get('mode', 'parallel')}; teams: {teams})"
-                )
-                if phase.get("deliverables"):
-                    lines.append(f"  - Deliverables: {', '.join(phase.get('deliverables', [])[:10])}")
-                gate = phase.get("phase_gate", {})
-                if isinstance(gate, dict) and gate.get("criteria"):
-                    lines.append(f"  - Gate: {', '.join(gate.get('criteria', [])[:4])}")
-            lines.append("")
-        lines.append("## Milestones")
-        for milestone in public.get("milestones", []):
-            depends = ", ".join(milestone.get("depends_on", [])) or "none"
-            lines.append(
-                f"- {milestone.get('id')}: {milestone.get('mode', 'serial')} "
-                f"({milestone.get('status', 'PLANNED')}, depends: {depends})"
-            )
-        lines.append("")
-        architecture = public.get("architecture", {})
-        lines.append("## Architecture")
-        lines.append(f"- Status: {architecture.get('status', 'DRAFT')}")
-        contexts = architecture.get("bounded_contexts", [])
-        if contexts:
-            lines.append("- Bounded contexts:")
-            for context in contexts:
-                if isinstance(context, dict):
-                    lines.append(f"  - {context.get('id', '')}: {context.get('label', '')}")
-        lines.append("")
-        lines.append("## Functional Teams")
-        for team in public.get("teams", []):
-            lines.append(f"### {team['id']}")
-            lines.append(f"- Type: {team.get('type', 'custom')}")
-            lines.append(f"- Label: {team.get('label', team['id'])}")
-            lines.append(f"- Owns: {', '.join(team.get('owns', [])) or 'None'}")
-            if team.get("depends_on"):
-                lines.append(f"- Depends on: {', '.join(team['depends_on'])}")
-            if team.get("interfaces"):
-                lines.append("- Interfaces:")
-                for interface in team["interfaces"]:
-                    lines.append(f"  - {json.dumps(interface, ensure_ascii=False, sort_keys=True)}")
-            if team.get("freeze_state"):
-                lines.append(f"- Freeze state: {team['freeze_state']}")
-            lines.append("")
-        if public.get("interfaces"):
-            lines.append("## Frozen Interfaces")
-            for interface in public["interfaces"]:
-                critical = "critical" if interface.get("critical") else "team-local"
-                lines.append(f"### {interface.get('id', '')}")
-                lines.append(f"- Owner: {interface.get('owner_team', '')}")
-                lines.append(f"- Status: {interface.get('status', 'DRAFT')} ({critical})")
-                if interface.get("artifact"):
-                    lines.append(f"- Artifact: {interface['artifact']}")
-                if interface.get("symbols"):
-                    lines.append("- Symbols:")
-                    for symbol in interface["symbols"][:8]:
-                        lines.append(f"  - {json.dumps(symbol, ensure_ascii=False, sort_keys=True)}")
-                lines.append("")
-        lines.append("## Work")
-        for item in public.get("work", []):
-            lines.append(f"### {item['id']}")
-            lines.append(f"- Team: {item.get('team', '')}")
-            if item.get("phase_id"):
-                lines.append(f"- Phase: {item['phase_id']}")
-            lines.append(f"- Kind: {item.get('kind', '')}")
-            lines.append(f"- Artifacts: {', '.join(item.get('artifacts', [])) or 'None'}")
-            if item.get("depends_on"):
-                lines.append(f"- Depends on: {', '.join(item['depends_on'])}")
-            if item.get("acceptance"):
-                lines.append("- Acceptance:")
-                for criterion in item["acceptance"]:
-                    lines.append(f"  - {criterion}")
-            lines.append("")
-        gates = public.get("gates", {})
-        if gates.get("team"):
-            lines.append("## Team Gates")
-            for gate in gates["team"]:
-                lines.append(f"### team:{gate['scope_id']}")
-                lines.append(f"- Test artifacts: {', '.join(gate.get('test_artifacts', [])) or 'None'}")
-                plan = gate.get("test_plan", {})
-                if plan:
-                    lines.append("- Test plan:")
-                    for key, value in sorted(plan.items()):
-                        lines.append(f"  - {key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
-                lines.append("")
-        if gates.get("final"):
-            final = gates["final"]
-            lines.append("## Final Gate")
-            lines.append(f"- Required artifacts: {len(final.get('required_artifacts', []))}")
-            lines.append(f"- Requires tests: {str(bool(final.get('requires_tests'))).lower()}")
-            lines.append("")
-        return "\n".join(lines).rstrip() + "\n"
-
-    def render_prd_markdown(self) -> str:
-        requirements = self._public_requirements()
-        lines = ["# PRD Lite", "", f"- Contract hash: `{self.content_hash()}`", ""]
-        lines.append(f"## Summary\n{requirements.get('summary', '')}")
-        lines.append("")
-        lines.append(f"## Delivery Type\n{requirements.get('delivery_type', 'coding')}")
-        for title, key in (
-            ("User Flows", "user_flows"),
-            ("Acceptance Scenarios", "acceptance_scenarios"),
-            ("Constraints", "constraints"),
-            ("Non Goals", "non_goals"),
-            ("Quality Bar", "quality_bar"),
-            ("Ambiguities", "ambiguities"),
-        ):
-            values = requirements.get(key, [])
-            if not values:
-                continue
-            lines.append("")
-            lines.append(f"## {title}")
-            for value in values:
-                if isinstance(value, dict):
-                    label = value.get("id") or value.get("name") or "scenario"
-                    text = value.get("description") or value.get("summary") or json.dumps(value, ensure_ascii=False, sort_keys=True)
-                    lines.append(f"- {label}: {text}")
-                else:
-                    lines.append(f"- {value}")
-        return "\n".join(lines).rstrip() + "\n"
-
-
-def load_contract_json(text: str) -> ContractSpec:
-    payload = json.loads(text)
-    if not isinstance(payload, dict):
-        raise ContractValidationError("Contract JSON root must be an object.")
-    return ContractSpec.from_mapping(payload)
-
-
-def default_root_scope() -> WorkScope:
-    return WorkScope(
-        id="root",
-        type="root",
-        label="Root work scope",
-        execution_plane_policy="auto",
-    )
+    @classmethod
+    def from_mapping(cls, payload: Dict[str, Any]) -> "ContractSpec":
+        payload = dict(payload or {})
+        contract = cls(
+            goal=str(payload.get("goal", "")),
+            product_kernel=ProductKernel.from_mapping(payload.get("product_kernel")),
+            canonical_substrate=CanonicalSubstrate.from_mapping(payload.get("canonical_substrate")),
+            feature_slices=[FeatureSlice.from_mapping(value) for value in payload.get("feature_slices", []) or []],
+            work_items=[WorkItem.from_mapping(value) for value in payload.get("work_items", []) or []],
+            required_artifacts=_dedupe(payload.get("required_artifacts", []) or []),
+            test_artifacts=_dedupe(payload.get("test_artifacts", []) or []),
+            feature_teams=[FeatureTeam.from_mapping(value) for value in payload.get("feature_teams", []) or []],
+            team_subcontracts=[
+                TeamSubContract.from_mapping(value) for value in payload.get("team_subcontracts", []) or []
+            ],
+            interface_capsules=[
+                InterfaceCapsule.from_mapping(value)
+                for value in (payload.get("interface_capsules", []) or [])
+            ],
+            teams=[TeamSpec.from_mapping(value) for value in payload.get("teams", []) or []],
+            team_states=[TeamStateRecord.from_mapping(value) for value in payload.get("team_states", []) or []],
+            promotions=[PromotionRecord.from_mapping(value) for value in payload.get("promotions", []) or []],
+            quality_transactions=[
+                QualityTransactionRecord.from_mapping(value)
+                for value in payload.get("quality_transactions", []) or []
+            ],
+            repair_transactions=[
+                RepairTransaction.from_mapping(value) for value in payload.get("repair_transactions", []) or []
+            ],
+            replans=[ReplanRecord.from_mapping(value) for value in payload.get("replans", []) or []],
+            llm_telemetry=LLMTelemetry.from_mapping(payload.get("llm_telemetry", {})),
+            version=str(payload.get("version", CONTRACT_VERSION)),
+        )
+        contract.validate()
+        return contract

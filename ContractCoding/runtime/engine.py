@@ -1,898 +1,437 @@
-"""Contract-first long-running run engine."""
+"""OpenAI-first Product Kernel long-running runtime."""
 
 from __future__ import annotations
 
-import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+import os
+import threading
+from typing import Any, Dict, List
 
-from ContractCoding.agents.profile import AgentProfileRegistry
 from ContractCoding.config import Config
-from ContractCoding.knowledge.manager import ContextManager
 from ContractCoding.contract.compiler import ContractCompiler
-from ContractCoding.contract.planner import ContractDraftPlanner, ContractDraftReviewer, PlanCritic
-from ContractCoding.contract.spec import ContractSpec, ContractValidationError
+from ContractCoding.contract.spec import WorkItem
 from ContractCoding.contract.store import ContractFileStore
-from ContractCoding.contract.work_item import WorkItem
-from ContractCoding.execution.runner import AgentRunner
-from ContractCoding.runtime.health import HealthMonitor
-from ContractCoding.runtime.hooks import HookManager
-from ContractCoding.runtime.gate_runner import GateRunner
+from ContractCoding.quality.finalization import FinalizationCoordinator
 from ContractCoding.runtime.monitor import RunMonitor
 from ContractCoding.runtime.recovery import RecoveryCoordinator
-from ContractCoding.runtime.narrative import RunNarrativeBuilder
-from ContractCoding.runtime.run_loop import RunLoop
-from ContractCoding.runtime.settings import SettingsManager
+from ContractCoding.runtime.scheduler import Scheduler, TeamWave
 from ContractCoding.runtime.store import RunRecord, RunStore
-from ContractCoding.runtime.tasks import TaskIndex
-from ContractCoding.runtime.teams import DependencyImpactAnalyzer, TeamRuntime
-from ContractCoding.runtime.team_executor import StepExecutor, TeamExecutor
-from ContractCoding.runtime.scheduler import Scheduler
+from ContractCoding.runtime.team import TeamRuntime
+from ContractCoding.runtime.worker import DeterministicWorker, OpenAIWorker
 
 
 @dataclass
 class AutoRunResult:
+    task_id: str
     run_id: str
     status: str
-    replans: int
     report: str
-    task_id: str = ""
 
 
-class AutoRunSteward:
-    """Conservative autonomous driver for CLI-like runs."""
+def _dedupe_runtime(values: List[str]) -> List[str]:
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
 
-    TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "PAUSED"}
-
-    def __init__(self, engine: "RunEngine"):
-        self.engine = engine
-        self.recovery = RecoveryCoordinator(engine)
-
-    def run(
-        self,
-        task: str,
-        *,
-        contract_path: Optional[str] = None,
-        max_steps: Optional[int] = None,
-    ) -> AutoRunResult:
-        run_id = self.engine.start(
-            task,
-            contract_path=contract_path,
-            run_immediately=False,
-        )
-        return self.continue_run(run_id, max_steps=max_steps)
-
-    def continue_run(
-        self,
-        run_id: str,
-        *,
-        max_steps: Optional[int] = None,
-    ) -> AutoRunResult:
-        replans = 0
-        if max_steps is not None and max_steps <= 0:
-            self.engine.store.update_run_status(
-                run_id,
-                "PAUSED",
-                {"reason": "max_steps_reached", "max_steps": max_steps},
-            )
-            run = self.engine.store.get_run(run_id)
-            if run:
-                self.engine.task_index.sync_from_run(run, {"replans": replans})
-            return AutoRunResult(
-                run_id=run_id,
-                status=run.status if run else "FAILED",
-                replans=replans,
-                report=self.engine.report(run_id),
-                task_id=str((run.metadata if run else {}).get("task_id", "")),
-            )
-
-        loops = 0
-        guardrails = self._effective_guardrails(run_id)
-        starting_steps = self.engine.store.count_steps(run_id)
-        while loops < self.engine.config.AUTO_MAX_STEWARD_LOOPS:
-            loops += 1
-            remaining_steps = None
-            if max_steps is not None:
-                consumed = self.engine.store.count_steps(run_id) - starting_steps
-                remaining_steps = max_steps - consumed
-                if remaining_steps <= 0:
-                    self.engine.store.update_run_status(
-                        run_id,
-                        "PAUSED",
-                        {
-                            "reason": "max_steps_reached",
-                            "max_steps": max_steps,
-                            "steps_executed": consumed,
-                        },
-                    )
-                    break
-            run = self.engine.resume(run_id, max_steps=remaining_steps)
-            if run.status in self.TERMINAL:
-                break
-            if run.status != "BLOCKED":
-                break
-
-            status = self.engine.status(run_id)
-            health = status["health"]
-            recovery = self.recovery.recover_without_replan(run_id, status, guardrails)
-            if recovery:
-                continue
-
-            contract_replan_limit = int(guardrails.get("contract_replan_limit", self.engine.config.AUTO_CONTRACT_REPLAN_MAX))
-            if not health.replan_recommended or replans >= contract_replan_limit:
-                self.engine.store.update_run_status(
-                    run_id,
-                    "BLOCKED",
-                    {
-                        "needs_human": True,
-                        "automatic_recovery_limit_reached": True,
-                        "contract_replan_limit_reached": replans >= contract_replan_limit,
-                    },
-                )
-                break
-
-            feedback = self._diagnostic_feedback(status)
-            self.engine.replan(run_id, feedback)
-            replans += 1
-
-        run = self.engine.store.get_run(run_id)
-        if run and run.status == "RUNNING":
-            if max_steps is not None:
-                self.engine.store.update_run_status(
-                    run_id,
-                    "PAUSED",
-                    {
-                        "reason": "max_steps_reached",
-                        "max_steps": max_steps,
-                        "steps_executed": self.engine.store.count_steps(run_id) - starting_steps,
-                    },
-                )
-            else:
-                self.engine.store.update_run_status(
-                    run_id,
-                    "FAILED",
-                    {"reason": "automatic steward loop limit reached"},
-                )
-            run = self.engine.store.get_run(run_id)
-        result = AutoRunResult(
-            run_id=run_id,
-            status=run.status if run else "FAILED",
-            replans=replans,
-            report=self.engine.report(run_id),
-            task_id=str((run.metadata if run else {}).get("task_id", "")),
-        )
-        if run:
-            self.engine.task_index.sync_from_run(run, {"replans": replans})
-        return result
-
-    @staticmethod
-    def _diagnostic_feedback(status: Dict[str, Any]) -> str:
-        blocked = [
-            f"{item.id}:{item.status}:{'; '.join(item.evidence[-3:])}"
-            for item in status.get("work_items", [])
-            if item.status == "BLOCKED"
-        ]
-        diagnostics = [
-            f"{diagnostic.code}:{diagnostic.message}"
-            for diagnostic in status.get("health").diagnostics
-        ] if status.get("health") else []
-        impact_tickets = [
-            (
-                f"{ticket.id}:{ticket.owner_scope or ticket.source_gate}:"
-                f"{ticket.failure_summary}:{ticket.repair_instruction}"
-            )
-            for ticket in status.get("repair_tickets", [])
-            if ticket.status in {"OPEN", "RUNNING"} and ticket.lane == "impact_replan"
-        ]
-        return (
-            "Impact replan requested by AutoRunSteward. "
-            "Apply the smallest contract delta that addresses the affected interface, "
-            "acceptance scenario, owner hint, or team boundary. Do not rewrite unrelated teams. "
-            "Preserve VERIFIED/DONE work. Reopen only blocked work. "
-            f"Blocked items: {blocked or ['none']}. "
-            f"Diagnostics: {diagnostics or ['none']}. "
-            f"Impact repair tickets: {impact_tickets or ['none']}."
-        )
-
-    def _effective_guardrails(self, run_id: str) -> Dict[str, int]:
-        contract = self.engine.store.get_contract(run_id)
-        policy = (contract.execution_policy if contract else {}).get("autonomy_guardrails", {}) if contract else {}
-        item_repair_limit = max(
-            int(policy.get("item_repair_limit", self.engine.config.AUTO_ITEM_REPAIR_MAX)),
-            int(self.engine.config.AUTO_ITEM_REPAIR_MAX),
-        )
-        return {
-            "infra_retry_limit": max(
-                int(policy.get("infra_retry_limit", self.engine.config.AUTO_INFRA_RETRY_MAX)),
-                int(self.engine.config.AUTO_INFRA_RETRY_MAX),
-            ),
-            "item_repair_limit": item_repair_limit,
-            "test_repair_limit": max(
-                int(policy.get("test_repair_limit", max(item_repair_limit, self.engine.config.AUTO_TEST_REPAIR_MAX))),
-                int(self.engine.config.AUTO_TEST_REPAIR_MAX),
-                item_repair_limit,
-            ),
-            "contract_replan_limit": max(
-                int(policy.get("contract_replan_limit", self.engine.config.AUTO_CONTRACT_REPLAN_MAX)),
-                int(self.engine.config.AUTO_CONTRACT_REPLAN_MAX),
-            ),
-        }
 
 class RunEngine:
-    """Durable V4 control plane.
-
-    The compiled contract is the scheduling source of truth. The store persists runtime
-    state: statuses, steps, team runs, leases, events, and evidence.
-    """
-
-    def __init__(
-        self,
-        config: Config,
-        agent_runner: Optional[AgentRunner] = None,
-        context_manager: Optional[ContextManager] = None,
-        store: Optional[RunStore] = None,
-        profile_registry: Optional[AgentProfileRegistry] = None,
-        step_executor: Optional[StepExecutor] = None,
-        draft_planner: Optional[ContractDraftPlanner] = None,
-    ):
-        self.config = config
-        self.agent_runner = agent_runner
-        self.context_manager = context_manager
-        self.store = store or RunStore.for_workspace(config.WORKSPACE_DIR, config.RUN_STORE_PATH)
-        self.profile_registry = profile_registry or AgentProfileRegistry()
+    def __init__(self, config: Config | None = None, worker: Any | None = None):
+        self.config = config or Config()
+        self.workspace_dir = os.path.abspath(self.config.WORKSPACE_DIR)
+        os.makedirs(self.workspace_dir, exist_ok=True)
+        self.store = RunStore(self.workspace_dir, getattr(self.config, "RUN_STORE_PATH", ""))
         self.compiler = ContractCompiler()
-        self.draft_planner = draft_planner or ContractDraftPlanner.from_config(config)
-        self.draft_reviewer = ContractDraftReviewer()
-        self.plan_critic = PlanCritic()
-        self.contract_files = ContractFileStore(config.WORKSPACE_DIR)
-        self.settings_manager = SettingsManager(config)
-        self.hooks = HookManager(store=self.store, enabled=True)
-        self.task_index = TaskIndex(self.store)
-        self.scheduler = Scheduler(self.store)
-        self.run_loop = RunLoop(self)
-        self.health_monitor = HealthMonitor(self.store, self.scheduler)
-        self.narrative = RunNarrativeBuilder()
-        self.monitor_builder = RunMonitor(self)
-        self.team_runtime = TeamRuntime(config=config, store=self.store)
-        self.dependency_impact = DependencyImpactAnalyzer(self.store)
-        self.team_executor = TeamExecutor(
-            config=config,
-            store=self.store,
-            agent_runner=agent_runner,
-            context_manager=context_manager,
-            profile_registry=self.profile_registry,
-            step_executor=step_executor,
-            team_runtime=self.team_runtime,
-            hook_manager=self.hooks,
+        self.scheduler = Scheduler()
+        self.monitor = RunMonitor(self.workspace_dir)
+        self.team_runtime = TeamRuntime(self.workspace_dir)
+        self.recovery = RecoveryCoordinator(
+            self.workspace_dir,
+            max_attempts=int(getattr(self.config, "AUTO_TEST_REPAIR_MAX", 2) or 2),
+            max_replans=int(getattr(self.config, "AUTO_CONTRACT_REPLAN_MAX", 1) or 1),
         )
-        self.gate_runner = GateRunner(
-            config=config,
-            store=self.store,
-            team_runtime=self.team_runtime,
-            agent_runner=agent_runner,
-            context_manager=context_manager,
-            profile_registry=self.profile_registry,
-            step_executor=step_executor,
-            hook_manager=self.hooks,
+        self.finalization = FinalizationCoordinator(
+            self.workspace_dir,
+            self.recovery,
+            self._append_event,
+            self._resolve_repair_transactions,
         )
-        self.auto_steward = AutoRunSteward(self)
+        self.worker = worker
+        self._event_lock = threading.Lock()
+        self._save_lock = threading.Lock()
 
-    def plan(
-        self,
-        task: str,
-        draft: Optional[ContractSpec | Dict[str, Any]] = None,
-        write_files: bool = True,
-    ) -> ContractSpec:
-        if draft is None and self.config.LLM_PLANNER_ENABLED:
-            draft_result = self.draft_planner.propose(task)
-            if draft_result.ok:
-                try:
-                    review = self.draft_reviewer.review(draft_result.draft or {})
-                    if not review.accepted:
-                        self.hooks.emit(
-                            "after_contract_drafted",
-                            payload={
-                                "backend": draft_result.backend,
-                                "planner": "llm_draft",
-                                "review": review.to_record(),
-                                "fallback": "deterministic",
-                            },
-                        )
-                        draft = None
-                    else:
-                        draft = draft_result.draft
-                        self.hooks.emit(
-                            "after_contract_drafted",
-                            payload={
-                                "backend": draft_result.backend,
-                                "planner": "llm_draft",
-                                "review": review.to_record(),
-                            },
-                        )
-                except Exception as exc:
-                    self.hooks.emit(
-                        "after_contract_drafted",
-                        payload={
-                            "backend": draft_result.backend,
-                            "planner": "llm_draft",
-                            "review_error": str(exc),
-                            "fallback": "deterministic",
-                        },
-                    )
-                    draft = None
-            elif draft_result.error:
-                self.hooks.emit(
-                    "after_contract_drafted",
-                    payload={
-                        "backend": draft_result.backend,
-                        "planner": "llm_draft",
-                        "error": draft_result.error,
-                    },
-                )
-        try:
-            contract = self.compiler.compile(task, draft)
-        except ContractValidationError as exc:
-            if draft is None:
-                raise
-            self.hooks.emit(
-                "after_contract_drafted",
-                payload={
-                    "planner": "llm_draft",
-                    "error": f"draft rejected by ContractCompiler: {exc}",
-                    "fallback": "deterministic",
-                },
+    def run(self, task: str, max_steps: int | None = None, offline: bool = False) -> AutoRunResult:
+        contract = self.compiler.compile(task)
+        ContractFileStore(self.workspace_dir).write(contract)
+        run = self.store.create_run(task, contract)
+        return self.resume(run.id, max_steps=max_steps, offline=offline)
+
+    def resume(self, run_id: str, max_steps: int | None = None, offline: bool = False) -> AutoRunResult:
+        run = self.store.get(run_id)
+        if run.status == "COMPLETED":
+            return self._result(run)
+        if run.status == "BLOCKED":
+            reopened = self._route_blocked_dependency_items(run)
+            reopened = self._reopen_retryable_infra_items(run) or reopened
+            reopened = self._reopen_retryable_local_items(run) or reopened
+            if not reopened:
+                return self._result(run)
+        run.status = "RUNNING"
+        budget = max(1, int(max_steps if max_steps is not None else getattr(self.config, "AUTO_MAX_STEWARD_LOOPS", 12)))
+        used = 0
+        while used < budget:
+            team_waves = self.scheduler.ready_team_waves(
+                run.contract,
+                max_teams=int(getattr(self.config, "MAX_PARALLEL_TEAMS", 4) or 4),
+                max_items_per_team=int(getattr(self.config, "MAX_PARALLEL_ITEMS_PER_TEAM", 3) or 3),
             )
-            draft = None
-            contract = self.compiler.compile(task)
-        if draft is not None:
-            metadata = dict(contract.metadata)
-            pipeline = list(metadata.get("planning_pipeline", []))
-            if "llm_draft_planner" not in pipeline:
-                pipeline.insert(0, "llm_draft_planner")
-            metadata["planning_pipeline"] = pipeline
-            metadata.setdefault("planner", "llm-draft+deterministic-compiler")
-            contract = self._with_contract_metadata(contract, metadata)
-
-            critic = self.plan_critic.review_contract(contract, context="llm_draft_plan")
-            if not critic.accepted:
-                self.hooks.emit(
-                    "after_contract_drafted",
-                    payload={
-                        "planner": "llm_draft",
-                        "plan_critic": critic.to_record(),
-                        "fallback": "deterministic",
-                    },
-                )
-                contract = self.compiler.compile(task)
-                draft = None
-            else:
-                contract = self._with_plan_critic(contract, critic)
-
-        if draft is None:
-            critic = self.plan_critic.review_contract(contract, context="deterministic_plan")
-            contract = self._with_plan_critic(contract, critic)
-        if write_files:
-            self.contract_files.write(contract)
-        self.hooks.emit(
-            "after_contract_compiled",
-            payload={"contract_hash": contract.content_hash(), "task_intent": contract.metadata.get("task_intent", task)},
-        )
-        return contract
-
-    def start(
-        self,
-        task: str,
-        contract: Optional[ContractSpec] = None,
-        contract_path: Optional[str] = None,
-        initial_work_items: Optional[Iterable[WorkItem]] = None,
-        run_immediately: bool = False,
-        max_steps: Optional[int] = None,
-        task_id: str = "",
-    ) -> str:
-        if contract_path:
-            contract = self.contract_files.read(contract_path)
-            contract = self.compiler.compile(task, contract)
-            self.contract_files.write(contract)
-        elif contract is None:
-            if initial_work_items is not None:
-                contract = self.compiler.compile(
-                    task,
+            if team_waves:
+                team_waves = self._trim_team_waves(team_waves, max(1, budget - used))
+                ready = [item for wave in team_waves for item in wave.items]
+                self._append_event(
+                    run.id,
+                    "ready_team_wave",
                     {
-                        "goals": [task],
-                        "work_scopes": [{"id": "root", "type": "root", "label": "Root work scope"}],
-                        "work_items": [item.to_record() for item in initial_work_items],
-                        "acceptance_criteria": ["All work items complete successfully."],
+                        "items": [item.id for item in ready],
+                        "phase": ready[0].phase,
+                        "parallelism": len(ready),
+                        "feature_teams": _dedupe_runtime([item.feature_team_id for item in ready]),
+                        "teams": [wave.to_record() for wave in team_waves],
                     },
                 )
-            elif self.contract_files.exists():
-                contract = self.contract_files.read()
-                contract = self.compiler.compile(task, contract)
-                self.contract_files.write(contract)
-            else:
-                contract = self.plan(task, write_files=True)
-        else:
-            contract = self.compiler.compile(task, contract)
-            self.contract_files.write(contract)
-
-        run_id = self.store.create_run(
-            task=task,
-            workspace_dir=self.config.WORKSPACE_DIR,
-            contract=contract,
-            metadata={"engine": "RunEngineV4", "contract_hash": contract.content_hash(), "task_id": task_id},
-        )
-        if task_id:
-            self.task_index.attach_run(task_id, run_id, "PENDING")
-        self.team_runtime.ensure_teams(run_id, contract)
-        self.store.sync_gates(run_id, contract)
-        self.hooks.emit(
-            "after_contract_compiled",
-            run_id=run_id,
-            task_id=task_id,
-            payload={"contract_hash": contract.content_hash(), "delivery_type": contract.metadata.get("delivery_type")},
-        )
-        if run_immediately:
-            self.resume(run_id, max_steps=max_steps)
-        return run_id
-
-    def run_auto(
-        self,
-        task: str,
-        *,
-        contract_path: Optional[str] = None,
-        max_steps: Optional[int] = None,
-    ) -> AutoRunResult:
-        existing = self.task_index.find_active_run_for_prompt(
-            prompt=task,
-            workspace_dir=self.config.WORKSPACE_DIR,
-            backend=self.config.LLM_BACKEND,
-        )
-        if existing is not None:
-            result = self.auto_steward.continue_run(existing.active_run_id, max_steps=max_steps)
-            result.task_id = existing.id
-            run = self.store.get_run(existing.active_run_id)
-            if run:
-                self.task_index.sync_from_run(run, {"resumed_existing_run": True, "replans": result.replans})
-            return result
-        task_record = self.task_index.create(
-            prompt=task,
-            workspace_dir=self.config.WORKSPACE_DIR,
-            backend=self.config.LLM_BACKEND,
-        )
-        run_id = self.start(task, contract_path=contract_path, run_immediately=False, task_id=task_record.id)
-        result = self.auto_steward.continue_run(run_id, max_steps=max_steps)
-        result.task_id = task_record.id
-        run = self.store.get_run(run_id)
-        if run:
-            self.task_index.sync_from_run(run, {"replans": result.replans})
-        return result
-
-    def resume_auto(self, run_id: str, max_steps: Optional[int] = None) -> AutoRunResult:
-        return self.auto_steward.continue_run(self.resolve_run_id(run_id), max_steps=max_steps)
-
-    def find_active_run_for_task(self, task: str) -> str:
-        task_record = self.task_index.find_active_run_for_prompt(
-            prompt=task,
-            workspace_dir=self.config.WORKSPACE_DIR,
-            backend=self.config.LLM_BACKEND,
-        )
-        return task_record.active_run_id if task_record is not None else ""
-
-    def resume(self, run_id: str, max_steps: Optional[int] = None) -> RunRecord:
-        return self.run_loop.resume(run_id, max_steps=max_steps)
-
-    def replan(self, run_id: str, feedback: str) -> ContractSpec:
-        run_id = self.resolve_run_id(run_id)
-        run = self._require_run(run_id)
-        current = self.store.get_contract(run_id)
-        if current is None:
-            raise ValueError(f"Run {run_id} does not have a compiled contract to replan.")
-        revised = self.compiler.replan(run.task, current, feedback)
-        revised = self._merge_replan_runtime_state(run_id, revised)
-        critic = self.plan_critic.review_contract(revised, context="replan")
-        revised = self._with_plan_critic(revised, critic, metadata_key="replan_critic")
-        self.store.save_contract_version(run_id, revised)
-        self.store.sync_work_items(run_id, revised.work_items)
-        self.team_runtime.ensure_teams(run_id, revised)
-        self.store.sync_gates(run_id, revised)
-        self.store.append_event(
-            run_id,
-            "run_replanned",
-            {
-                "contract_hash": revised.content_hash(),
-                "revision": revised.metadata.get("revision", 0),
-                "feedback": feedback,
-            },
-        )
-        for ticket in self.store.list_repair_tickets(run_id, statuses={"OPEN", "RUNNING"}, limit=200):
-            if ticket.lane == "impact_replan":
-                self.store.update_repair_ticket_status(
-                    ticket.id,
-                    "RESOLVED",
-                    evidence_refs=[revised.content_hash()],
-                    metadata={"resolved_by": "contract_delta_replan"},
-                )
-        self.contract_files.write(revised)
-        self.store.update_run_status(run_id, "RUNNING")
-        return revised
-
-    def _merge_replan_runtime_state(self, run_id: str, revised: ContractSpec) -> ContractSpec:
-        runtime_by_id = {item.id: item for item in self.store.list_work_items(run_id)}
-        merged_items = []
-        for item in revised.work_items:
-            existing = runtime_by_id.get(item.id)
-            if existing is None:
-                merged_items.append(item)
+                if len(team_waves) == 1 and len(team_waves[0].items) == 1:
+                    self._execute_item(run, team_waves[0].items[0], offline=offline)
+                    used += 1
+                    run.steps += 1
+                    self._save(run)
+                    continue
+                with ThreadPoolExecutor(max_workers=len(team_waves)) as executor:
+                    futures = {executor.submit(self._execute_team_wave, run, wave, offline): wave for wave in team_waves}
+                    for future in as_completed(futures):
+                        wave = futures[future]
+                        try:
+                            completed_count = int(future.result() or 0)
+                        except Exception as exc:
+                            completed_count = 0
+                            for item in wave.items:
+                                item.status = "BLOCKED"
+                                item.diagnostics = [
+                                    {
+                                        "code": "runtime_item_exception",
+                                        "slice_id": item.slice_id,
+                                        "work_item_id": item.id,
+                                        "message": str(exc),
+                                    }
+                                ]
+                            self._append_event(
+                                run.id,
+                                "team_wave_blocked",
+                                {"team": wave.to_record(), "message": str(exc)},
+                            )
+                        used += completed_count
+                        run.steps += completed_count
+                        self._save(run)
                 continue
-            payload = item.to_record()
-            payload["evidence"] = list(existing.evidence)
-            if existing.status == "BLOCKED":
-                payload["status"] = "READY"
-                inputs = dict(existing.inputs)
-                inputs.update(payload.get("inputs", {}))
-                inputs["replan_feedback"] = revised.metadata.get("replan_feedback", "")
-                payload["inputs"] = inputs
-            else:
-                payload["status"] = existing.status
-                payload["inputs"] = {**dict(existing.inputs), **dict(payload.get("inputs", {}))}
-            merged_items.append(WorkItem.from_mapping(payload))
-        return ContractSpec(
-            goals=revised.goals,
-            work_scopes=revised.work_scopes,
-            work_items=merged_items,
-            requirements=revised.requirements,
-            architecture=revised.architecture,
-            milestones=revised.milestones,
-            phase_plan=revised.phase_plan,
-            interfaces=revised.interfaces,
-            deltas=revised.deltas,
-            team_gates=revised.team_gates,
-            final_gate=revised.final_gate,
-            acceptance_criteria=revised.acceptance_criteria,
-            execution_policy=revised.execution_policy,
-            risk_policy=revised.risk_policy,
-            verification_policy=revised.verification_policy,
-            test_ownership=revised.test_ownership,
-            version=revised.version,
-            metadata=revised.metadata,
-            owner_hints=revised.owner_hints,
-        )
-
-    def _with_plan_critic(
-        self,
-        contract: ContractSpec,
-        critic,
-        *,
-        metadata_key: str = "plan_critic",
-    ) -> ContractSpec:
-        metadata = dict(contract.metadata)
-        metadata[metadata_key] = critic.to_record()
-        pipeline = list(metadata.get("planning_pipeline", []))
-        if "plan_critic" not in pipeline:
-            pipeline.append("plan_critic")
-        metadata["planning_pipeline"] = pipeline
-        return self._with_contract_metadata(contract, metadata)
-
-    @staticmethod
-    def _with_contract_metadata(contract: ContractSpec, metadata: Dict[str, Any]) -> ContractSpec:
-        return ContractSpec(
-            goals=contract.goals,
-            work_scopes=contract.work_scopes,
-            work_items=contract.work_items,
-            requirements=contract.requirements,
-            architecture=contract.architecture,
-            milestones=contract.milestones,
-            phase_plan=contract.phase_plan,
-            interfaces=contract.interfaces,
-            deltas=contract.deltas,
-            team_gates=contract.team_gates,
-            final_gate=contract.final_gate,
-            acceptance_criteria=contract.acceptance_criteria,
-            execution_policy=contract.execution_policy,
-            risk_policy=contract.risk_policy,
-            verification_policy=contract.verification_policy,
-            test_ownership=contract.test_ownership,
-            version=contract.version,
-            metadata=dict(metadata),
-            owner_hints=contract.owner_hints,
-        )
-
-    def pause(self, run_id: str) -> None:
-        run_id = self.resolve_run_id(run_id)
-        self._require_run(run_id)
-        self.store.update_run_status(run_id, "PAUSED")
-
-    def cancel(self, run_id: str) -> None:
-        run_id = self.resolve_run_id(run_id)
-        self._require_run(run_id)
-        self.store.update_run_status(run_id, "CANCELLED")
+            if self.scheduler.blocked_items(run.contract):
+                run.status = "BLOCKED"
+                self._append_event(run.id, "run_blocked", {"items": [item.id for item in self.scheduler.blocked_items(run.contract)]})
+                self._save(run)
+                return self._result(run)
+            if self.scheduler.is_complete(run.contract):
+                final_status = self.finalization.finalize(run)
+                self._save(run)
+                if final_status in {"completed", "blocked"}:
+                    return self._result(run)
+                continue
+            break
+        if run.status == "RUNNING":
+            run.status = "PAUSED"
+        self._save(run)
+        self.monitor.write(run)
+        return self._result(run)
 
     def status(self, run_id: str) -> Dict[str, Any]:
-        run_id = self.resolve_run_id(run_id)
-        run = self._require_run(run_id)
-        return {
-            "run": run,
-            "task": self.task_index.task_for_run(run_id),
-            "contract": self.store.get_contract(run_id),
-            "work_items": self.store.list_work_items(run_id),
-            "steps": self.store.latest_steps(run_id, limit=20),
-            "team_runs": self.store.list_wave_team_runs(run_id, limit=20),
-            "scope_teams": self.store.list_scope_team_runs(run_id, limit=200),
-            "gates": self.store.list_gates(run_id),
-            "repair_tickets": self.store.list_repair_tickets(run_id, limit=200),
-            "events": self.store.list_events(run_id, limit=20),
-            "blocked": self.scheduler.blocked_reasons(run_id),
-            "health": self.health_monitor.check(run_id),
-        }
-
-    def report(self, run_id: str, max_lines: int = 12) -> str:
-        run_id = self.resolve_run_id(run_id)
-        status = self.status(run_id)
-        run = status["run"]
-        return self.narrative.build_report(
-            run=run,
-            items=status["work_items"],
-            steps=status["steps"],
-            team_runs=[*status.get("scope_teams", []), *status["team_runs"]],
-            gates=status.get("gates", []),
-            repair_tickets=status.get("repair_tickets", []),
-            contract=status.get("contract"),
-            waves=self.scheduler.next_wave(run_id),
-            health=status.get("health"),
-            max_lines=max_lines,
-        )
-
-    def monitor(self, run_id: str, write_file: bool = True) -> Dict[str, Any]:
-        return self.monitor_builder.snapshot(run_id, write_file=write_file)
+        run = self.store.get(run_id)
+        return self.monitor.snapshot(run)
 
     def graph(self, run_id: str) -> Dict[str, Any]:
-        run_id = self.resolve_run_id(run_id)
-        contract = self.store.get_contract(run_id)
-        if contract is None:
-            raise ValueError(f"Run {run_id} does not have a compiled contract.")
-        ready = self.scheduler.next_wave(run_id)
-        blocked = self.scheduler.blocked_reasons(run_id)
+        run = self.store.get(run_id)
         return {
-            "contract_hash": contract.content_hash(),
-            "scopes": [scope.to_record() for scope in contract.work_scopes],
-            "items": [item.to_record() for item in self.store.list_work_items(run_id)],
-            "teams": [
-                {
-                    "team_id": team.id,
-                    "scope_id": team.scope_id,
-                    "status": team.status,
-                    "team_kind": team.metadata.get("team_kind"),
-                    "workspace_plane": team.execution_plane,
-                    "roles": team.metadata.get("roles", []),
-                    "owned_items": team.work_item_ids,
-                    "owned_artifacts": team.metadata.get("owned_artifacts", []),
-                    "promotion_policy": team.metadata.get("promotion_policy", {}),
-                    "active_items": team.metadata.get("active_items", []),
-                    "partial_promoted_files": team.metadata.get("partial_promoted_files", []),
-                    "blocked_reason": team.metadata.get("promotion_error") or team.metadata.get("stale_reason") or "",
-                }
-                for team in self.store.list_scope_team_runs(run_id, limit=200)
-            ],
-            "gates": [
-                {
-                    "gate_id": gate.gate_id,
-                    "gate_type": gate.gate_type,
-                    "scope_id": gate.scope_id,
-                    "status": gate.status,
-                    "evidence": gate.evidence[-5:],
-                    "metadata": gate.metadata,
-                }
-                for gate in self.store.list_gates(run_id)
-            ],
-            "repair_tickets": [
-                {
-                    "id": ticket.id,
-                    "lane": ticket.lane,
-                    "status": ticket.status,
-                    "source_gate": ticket.source_gate,
-                    "source_item_id": ticket.source_item_id,
-                    "owner_scope": ticket.owner_scope,
-                    "owner_artifacts": ticket.owner_artifacts,
-                    "affected_scopes": ticket.affected_scopes,
-                    "attempt_count": ticket.attempt_count,
-                    "summary": ticket.failure_summary,
-                    "repair_bundle": ticket.metadata.get("repair_bundle", {}),
-                }
-                for ticket in self.store.list_repair_tickets(run_id, limit=200)
-            ],
-            "ready_waves": [
-                {
-                    "scope_id": wave.scope.id,
-                    "wave_kind": wave.wave_kind,
-                    "execution_plane": wave.execution_plane,
-                    "parallel_slots": wave.parallel_slots,
-                    "items": [item.id for item in wave.items],
-                    "conflict_keys": wave.conflict_keys,
-                    "parallel_reason": wave.parallel_reason,
-                    "serial_reason": wave.serial_reason,
-                }
-                for wave in ready
-            ],
-            "blocked": [{"work_item_id": item.work_item_id, "reason": item.reason} for item in blocked],
+            "run_id": run.id,
+            "status": run.status,
+            "kernel": run.contract.product_kernel.to_record(),
+            "canonical_substrate": run.contract.canonical_substrate.to_record(),
+            "feature_teams": [team.to_record() for team in run.contract.feature_teams],
+            "team_subcontracts": [subcontract.to_record() for subcontract in run.contract.team_subcontracts],
+            "interface_capsules": [capsule.to_record() for capsule in run.contract.interface_capsules],
+            "slices": [feature_slice.to_record() for feature_slice in run.contract.feature_slices],
+            "items": [item.to_record() for item in run.contract.work_items],
+            "teams": [team.to_record() for team in run.contract.teams],
+            "team_states": [state.to_record() for state in run.contract.team_states],
+            "promotions": [promotion.to_record() for promotion in run.contract.promotions],
+            "quality_transactions": [transaction.to_record() for transaction in run.contract.quality_transactions],
+            "repair_transactions": [transaction.to_record() for transaction in run.contract.repair_transactions],
+            "replans": [replan.to_record() for replan in run.contract.replans],
+            "llm_telemetry": run.contract.llm_telemetry.to_record(),
         }
 
-    def teams(self, run_id: str) -> List[Dict[str, Any]]:
-        run_id = self.resolve_run_id(run_id)
-        self._require_run(run_id)
-        return [
-            {
-                "team_id": team.id,
-                "scope_id": team.scope_id,
-                "status": team.status,
-                "team_kind": team.metadata.get("team_kind"),
-                "workspace_plane": team.execution_plane,
-                "roles": team.metadata.get("roles", []),
-                "owned_items": team.work_item_ids,
-                "owned_artifacts": team.metadata.get("owned_artifacts", []),
-                "promotion_policy": team.metadata.get("promotion_policy", {}),
-                "team_memory": team.metadata.get("team_memory", {}),
-                "active_items": team.metadata.get("active_items", []),
-                "partial_promoted_files": team.metadata.get("partial_promoted_files", []),
-                "promoted_files": team.metadata.get("promoted_files", []),
-                "blocked_reason": team.metadata.get("promotion_error") or team.metadata.get("stale_reason") or "",
-            }
-            for team in self.store.list_scope_team_runs(run_id, limit=200)
-        ]
+    def events(self, run_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        return self.store.events(run_id, limit=limit)
 
-    def events(self, run_id: str, limit: int = 50):
-        run_id = self.resolve_run_id(run_id)
-        self._require_run(run_id)
-        return self.store.list_events(run_id, limit=limit)
-
-    def human_events(self, run_id: str, limit: int = 50) -> list[str]:
-        run_id = self.resolve_run_id(run_id)
-        self._require_run(run_id)
-        return self.narrative.events_to_human(self.store.list_events(run_id, limit=limit))
-
-    def resolve_run_id(self, task_or_run_id: str) -> str:
-        return self.task_index.resolve_run_id(task_or_run_id)
-
-    def _execute_wave(self, run: RunRecord, wave) -> Any:
-        self.hooks.emit(
-            "before_team_dispatch",
-            run_id=run.id,
-            task_id=str(run.metadata.get("task_id", "")),
-            payload={"scope_id": wave.scope.id, "items": [item.id for item in wave.items]},
+    def _execute_item(self, run: RunRecord, item: WorkItem, offline: bool) -> None:
+        item.status = "RUNNING"
+        item.attempts += 1
+        self._append_event(
+            run.id,
+            "item_started",
+            {"id": item.id, "slice_id": item.slice_id, "team_id": item.team_id, "feature_team_id": item.feature_team_id},
         )
-        return self.team_executor.execute(run, wave)
-
-    def _refresh_runtime_settings(self) -> None:
-        settings = self.settings_manager.snapshot()
-        self.settings_manager.apply_to_config(settings)
-        self.hooks.enabled = settings.hooks_enabled
-        self.scheduler.runtime_overrides = settings.scheduler_overrides()
-
-    def _finish_or_block(self, run_id: str) -> None:
-        self._promote_ready_teams(run_id)
-        self._resolve_repair_tickets(run_id)
-        items = self.store.list_work_items(run_id)
-        gates = self.store.list_gates(run_id)
-        final_gate = next((gate for gate in gates if gate.gate_id == "final"), None)
-        all_team_gates_passed = all(gate.status == "PASSED" for gate in gates if gate.gate_type == "team")
-        if (
-            items
-            and all(item.status == "VERIFIED" for item in items)
-            and self._teams_complete(run_id)
-            and all_team_gates_passed
-            and (final_gate is None or final_gate.status == "PASSED")
-        ):
-            self.store.update_run_status(
-                run_id,
-                "COMPLETED",
-                {
-                    "needs_human": False,
-                    "automatic_recovery_limit_reached": False,
-                    "contract_replan_limit_reached": False,
-                    "replan_recommended": False,
-                    "replan_reasons": [],
-                },
-            )
-            run = self._require_run(run_id)
-            self.task_index.sync_from_run(run)
-            self.hooks.emit(
-                "after_run_complete",
-                run_id=run_id,
-                task_id=str(run.metadata.get("task_id", "")),
-                payload={"status": run.status},
-            )
-        elif items:
-            failed = [item for item in items if item.status == "BLOCKED"]
-            failed_gates = [gate for gate in gates if gate.status in {"FAILED", "BLOCKED"}]
-            metadata = {}
-            if failed or failed_gates:
-                metadata = {
-                    "replan_recommended": True,
-                    "replan_reasons": [
-                        *[f"{item.id}:{item.status}" for item in failed],
-                        *[f"{gate.gate_id}:{gate.status}" for gate in failed_gates],
-                    ],
-                }
-                self.store.append_event(run_id, "replan_recommended", metadata)
-            elif all(item.status == "VERIFIED" for item in items):
-                incomplete_teams = [
-                    team
-                    for team in self.store.list_scope_team_runs(run_id, limit=200)
-                    if team.status not in {"PROMOTED", "CLOSED"}
-                ]
-                if incomplete_teams:
-                    metadata = {
-                        "replan_recommended": False,
-                        "replan_reasons": [
-                            f"team:{team.scope_id}:{team.status}" for team in incomplete_teams
-                        ],
-                    }
-            self.store.update_run_status(run_id, "BLOCKED", metadata)
-            run = self._require_run(run_id)
-            self.task_index.sync_from_run(run, metadata)
-            self.hooks.emit(
-                "on_blocked",
-                run_id=run_id,
-                task_id=str(run.metadata.get("task_id", "")),
-                payload=metadata,
-            )
-        else:
-            self.store.update_run_status(run_id, "FAILED", {"reason": "run has no work items"})
-            run = self._require_run(run_id)
-            self.task_index.sync_from_run(run, {"reason": "run has no work items"})
-
-    def _resolve_repair_tickets(self, run_id: str) -> None:
-        for ticket in self.store.list_repair_tickets(run_id, statuses={"OPEN", "RUNNING"}, limit=200):
-            if ticket.lane == "impact_replan":
-                continue
-            if ticket.source_item_id:
-                item = self.store.get_work_item(run_id, ticket.source_item_id)
-                if item is not None and item.status == "VERIFIED":
-                    self.store.update_repair_ticket_status(
-                        ticket.id,
-                        "RESOLVED",
-                        evidence_refs=[ticket.source_item_id],
-                        metadata={"resolved_by": "work_item_verified"},
-                    )
-                continue
-            if ticket.source_gate:
-                gate = self.store.get_gate(run_id, ticket.source_gate)
-                if gate is not None and gate.status == "PASSED":
-                    self.store.update_repair_ticket_status(
-                        ticket.id,
-                        "RESOLVED",
-                        evidence_refs=[ticket.source_gate],
-                        metadata={"resolved_by": "gate_passed"},
-                    )
-
-    def _promote_ready_teams(self, run_id: str) -> None:
-        run = self._require_run(run_id)
-        contract = self.store.get_contract(run_id)
-        if contract is None:
-            return
-        self.team_runtime.ensure_teams(run_id, contract)
-        for team in self.store.list_scope_team_runs(run_id, limit=200):
-            if team.scope_id == "integration":
-                continue
-            self.team_runtime.promote_verified_artifacts(run, contract, team.scope_id)
-            promoted = self.team_runtime.promote_if_ready(run, contract, team.scope_id)
-            if promoted and team.scope_id != "package":
-                self.dependency_impact.mark_stale(
-                    run_id,
-                    team.scope_id,
-                    reason="dependent runtime gate must revalidate after promotion",
+        worker = self._worker(offline)
+        team_result = self.team_runtime.execute(run.id, run.contract, item, worker)
+        if not team_result.ok:
+            item.diagnostics = list(team_result.diagnostics)
+            if item.kind == "repair" and self.recovery.handle_repair_failure(run, item, item.diagnostics):
+                self._sync_team_states(run)
+                self._append_event(
+                    run.id,
+                    "repair_transaction_continued",
+                    {"id": item.id, "diagnostics": item.diagnostics, "status": item.status},
                 )
+                return
+            if self.recovery.handle_item_blocker(run, item, item.diagnostics):
+                self._sync_team_states(run)
+                self._append_event(
+                    run.id,
+                    "repair_transaction_opened_from_blocker",
+                    {"id": item.id, "diagnostics": item.diagnostics, "status": item.status},
+                )
+                return
+            item.status = "BLOCKED"
+            self._sync_team_states(run)
+            self._append_event(run.id, "item_blocked", {"id": item.id, "diagnostics": item.diagnostics})
+            return
+        item.evidence = list(team_result.evidence)
+        item.diagnostics = []
+        item.status = "VERIFIED"
+        self._sync_team_states(run)
+        self._append_event(
+            run.id,
+            "item_verified",
+            {
+                "id": item.id,
+                "team_id": item.team_id,
+                "feature_team_id": item.feature_team_id,
+                "promotion": team_result.promotion.to_record() if team_result.promotion else {},
+            },
+        )
 
-    def _teams_complete(self, run_id: str) -> bool:
-        teams = [
-            team
-            for team in self.store.list_scope_team_runs(run_id, limit=200)
-            if team.scope_id != "integration"
-        ]
-        if not teams:
-            return True
-        return all(team.status in {"PROMOTED", "CLOSED"} for team in teams)
+    def _execute_team_wave(self, run: RunRecord, wave: TeamWave, offline: bool) -> int:
+        self._append_event(
+            run.id,
+            "team_wave_started",
+            {
+                **wave.to_record(),
+                "execution": "internal_parallel" if wave.internal_parallel else "internal_serial",
+            },
+        )
+        if not wave.internal_parallel:
+            for item in wave.items:
+                self._execute_item(run, item, offline=offline)
+            return len(wave.items)
+        with ThreadPoolExecutor(max_workers=len(wave.items)) as executor:
+            futures = {executor.submit(self._execute_item, run, item, offline): item for item in wave.items}
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    item.status = "BLOCKED"
+                    item.diagnostics = [
+                        {
+                            "code": "runtime_item_exception",
+                            "slice_id": item.slice_id,
+                            "work_item_id": item.id,
+                            "message": str(exc),
+                        }
+                    ]
+                    self._sync_team_states(run)
+                    self._append_event(run.id, "item_blocked", {"id": item.id, "diagnostics": item.diagnostics})
+        return len(wave.items)
 
-    def _require_run(self, run_id: str) -> RunRecord:
-        run = self.store.get_run(run_id)
-        if run is None:
-            raise ValueError(f"Unknown run id: {run_id}")
-        return run
+    @staticmethod
+    def _trim_team_waves(waves: List[TeamWave], remaining: int) -> List[TeamWave]:
+        trimmed: List[TeamWave] = []
+        left = max(1, int(remaining or 1))
+        for wave in waves:
+            if left <= 0:
+                break
+            items = wave.items[:left]
+            if not items:
+                continue
+            trimmed.append(
+                TeamWave(
+                    feature_team_id=wave.feature_team_id,
+                    team_id=wave.team_id,
+                    items=items,
+                    internal_parallel=wave.internal_parallel and len(items) > 1,
+                    phase=wave.phase,
+                )
+            )
+            left -= len(items)
+        return trimmed
+
+    def _append_event(self, run_id: str, event_type: str, payload: Dict[str, Any] | None = None) -> None:
+        with self._event_lock:
+            self.store.append_event(run_id, event_type, payload or {})
+
+    def _save(self, run: RunRecord) -> None:
+        with self._save_lock:
+            self._sync_team_states(run)
+            self.store.save(run)
+            self.monitor.write(run)
+
+    def _worker(self, offline: bool):
+        if self.worker is not None:
+            return self.worker
+        if offline or os.getenv("CONTRACTCODING_OFFLINE_WORKER", "").lower() in {"1", "true", "yes"}:
+            return DeterministicWorker()
+        return OpenAIWorker(self.config)
+
+    def _resolve_repair_transactions(self, run: RunRecord) -> None:
+        changed = False
+        for transaction in run.contract.repair_transactions:
+            if transaction.status in {"OPEN", "PATCH_VALIDATED", "REPLANNED"}:
+                transaction.status = "RESOLVED"
+                transaction.evidence.append("final integration gate passed after repair/replan")
+                self.recovery.write_transaction(run.id, transaction)
+                changed = True
+        if changed:
+            self._append_event(run.id, "repair_transactions_resolved", {})
+
+    def _reopen_retryable_infra_items(self, run: RunRecord) -> bool:
+        max_retries = max(0, int(getattr(self.config, "AUTO_INFRA_RETRY_MAX", 2) or 0))
+        reopened: List[str] = []
+        for item in run.contract.work_items:
+            if item.status != "BLOCKED" or item.attempts > max_retries:
+                continue
+            if not any(str(diag.get("code", "")) == "worker_infra_failure" for diag in item.diagnostics):
+                continue
+            item.status = "PENDING"
+            item.diagnostics = []
+            reopened.append(item.id)
+        if not reopened:
+            return False
+        run.status = "PAUSED"
+        self._append_event(run.id, "infra_retry_reopened", {"items": reopened, "max_retries": max_retries})
+        self._save(run)
+        return True
+
+    def _route_blocked_dependency_items(self, run: RunRecord) -> bool:
+        routed: List[str] = []
+        for item in run.contract.work_items:
+            if item.status != "BLOCKED" or item.kind == "repair":
+                continue
+            if not self.recovery.handle_item_blocker(run, item, item.diagnostics):
+                continue
+            routed.append(item.id)
+        if not routed:
+            return False
+        run.status = "PAUSED"
+        self._append_event(run.id, "blocked_dependency_routed_to_repair", {"items": routed})
+        self._save(run)
+        return True
+
+    def _reopen_retryable_local_items(self, run: RunRecord) -> bool:
+        max_attempts = max(1, int(getattr(self.config, "AUTO_ITEM_REPAIR_MAX", getattr(self.config, "AUTO_RETRY_MAX_PER_ITEM", 2)) or 2))
+        reopened: List[str] = []
+        for item in run.contract.work_items:
+            if item.status != "BLOCKED" or item.kind == "repair":
+                continue
+            if item.attempts >= max_attempts:
+                continue
+            if not self._is_retryable_local_failure(item):
+                continue
+            item.status = "PENDING"
+            item.evidence.append("reopened for local slice retry after gate failure")
+            reopened.append(item.id)
+        if not reopened:
+            return False
+        run.status = "PAUSED"
+        self._append_event(run.id, "local_retry_reopened", {"items": reopened, "max_attempts": max_attempts})
+        self._save(run)
+        return True
+
+    @staticmethod
+    def _is_retryable_local_failure(item: WorkItem) -> bool:
+        retryable_codes = {
+            "syntax_error",
+            "slice_smoke_import_failed",
+            "promotion_blocked",
+            "missing_artifact",
+            "placeholder_detected",
+        }
+        return any(str(diagnostic.get("code", "")) in retryable_codes for diagnostic in item.diagnostics)
+
+    def _result(self, run: RunRecord) -> AutoRunResult:
+        return AutoRunResult(
+            task_id=run.id,
+            run_id=run.id,
+            status=run.status,
+            report=self.monitor.snapshot(run)["report"],
+        )
+
+    def _sync_team_states(self, run: RunRecord) -> None:
+        contract = run.contract
+        verified = {
+            item.slice_id
+            for item in contract.work_items
+            if item.status == "VERIFIED"
+        }
+        capsule_by_team = {capsule.team_id: capsule for capsule in contract.interface_capsules}
+        by_team_items: Dict[str, List[WorkItem]] = {}
+        for item in contract.work_items:
+            by_team_items.setdefault(item.feature_team_id or item.slice_id, []).append(item)
+        known = {state.team_id: state for state in contract.team_states}
+        for team in contract.feature_teams:
+            state = known.get(team.id)
+            if state is None:
+                continue
+            items = by_team_items.get(team.id, [])
+            active = [item.id for item in items if item.status == "RUNNING"]
+            ready = [
+                item.id
+                for item in items
+                if item.status in {"PENDING", "READY"}
+                and all(dep in verified or dep in contract.item_by_id() and contract.item_by_id()[dep].status == "VERIFIED" for dep in item.dependencies)
+            ]
+            capsule = capsule_by_team.get(team.id)
+            state.interface_refs = [capsule.id] if capsule else []
+            state.frozen_interfaces = [capsule.id] if capsule and capsule.status == "LOCKED" else []
+            state.active_item_ids = active
+            state.ready_item_ids = ready
+            waiting: List[str] = []
+            for item in items:
+                if item.status not in {"PENDING", "READY", "RUNNING"}:
+                    continue
+                for dependency in item.dependencies:
+                    if dependency.startswith("capsule:") and dependency not in verified:
+                        waiting.append(dependency)
+            for dependency_team in team.dependencies:
+                capsule_ref = f"capsule:{dependency_team}"
+                if capsule_ref not in verified:
+                    waiting.append(capsule_ref)
+            state.waiting_on_interfaces = _dedupe_runtime(waiting)
+            if active:
+                state.phase = "running"
+            elif state.ready_item_ids:
+                next_item = next((item for item in items if item.id in state.ready_item_ids), None)
+                state.phase = "capsule" if next_item and next_item.kind in {"capsule", "interface"} else "build"
+            elif items and all(item.status == "VERIFIED" for item in items):
+                state.phase = "verified"
+            elif state.waiting_on_interfaces:
+                state.phase = "waiting_on_capsule"
+            else:
+                state.phase = "planned"

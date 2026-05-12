@@ -1,222 +1,98 @@
 # ContractCoding
 
-ContractCoding is an OpenAI-first, contract-first long-running agent runtime. It compiles a canonical contract into scope-based team waves, runs serial and parallel work with durable state, and keeps all LLM tool use behind ContractCoding's permission gate.
+ContractCoding is an OpenAI-first long-running agent runtime built around **Product Kernel + Canonical Substrate + Team Subcontract + Interface Capsule + Feature Slice + Quality Transaction + Repair Transaction**.
 
-## What It Is
+This branch intentionally removed the old module-team, late-repair Runtime V4 path. The active runtime is `ContractSpec V8 / Runtime V5`: a small durable control plane that freezes product semantics first, sends bounded feature slices to agent teams, promotes only verified owner artifacts, and routes final integration failures into a central repair transaction lane.
 
-ContractCoding is built around four ideas:
+## Core Model
 
-- `ContractSpec V8` is the scheduling source of truth. `.contractcoding/contract.json` is canonical; Markdown is only a rendered view.
-- `WorkScope` is the functional team boundary. Coding scopes are domains like `domain`, `core`, `ai`, `io`, and `interface`; research, docs, ops, and data get their own scope types.
-- `WorkItem` is only production work. Tests, review, team acceptance, and final acceptance are first-class gates, not fake WorkItems.
-- `TeamGate` and `FinalGate` define quality boundaries. Each item gets a deterministic self-check; each team gets one gate; the project gets one final gate.
-- `Scheduler` produces ready `TeamWave`s. Independent scopes and independent items run in parallel; shared conflict keys and serial groups stay serial.
-- `RunStore` records runtime facts only: run state, contract versions, leases, team runs, gate status, steps, events, and evidence.
+- `ProductKernel` is the frozen semantic source of truth: schemas, fixtures, public flows, canonical type ownership, invariants, semantic invariants, public paths, and acceptance matrix.
+- `FeatureSlice` is a runnable product slice such as `behavior_engine`, `persistence_flow`, or `public_interface`; it owns artifacts and declares dependencies, fixtures, invariants, interface contract, slice smoke, soft quality signals, and done contract. Large projects are split into finer capability slices so independent domain/core/io/interface work can run in parallel waves.
+- `CanonicalSubstrate` names the single owner artifact for shared value objects/enums and forces that substrate to land before dependent slices can consume or extend it.
+- `TeamSubContract` is the bounded local contract for a managed team: owned concepts/artifacts, dependency capsule refs, local gates, internal parallel groups, serial edges, agent roles, context policy, and escalation policy.
+- `FeatureTeam` groups related slices behind that subcontract and one or more interface capsules.
+- `TeamSpec` represents the managed agent team for a feature team: lead, worker pool, interface steward, and reviewer. A team may execute multiple ready slices internally when conflict keys and dependencies allow it.
+- `InterfaceCapsule` replaces the old executable-interface path. The compiler creates a compact `INTENT` capsule from product semantics and team boundaries; runtime first runs parallel `capsule` lock items, then implementation work depends on locked capsules. The planner does not have to predesign every class or private API.
+- `TeamStateRecord` stores async collaboration state: current phase, locked capsules, waiting capsules, ready items, active items, and mailbox capsule requests.
+- Skills and prompt overlays push planning, interface reasoning, code generation, test authoring, and repair judgment into the agent packet; the runtime stays a control plane and fallback layer. Visible Agent-Skills-style files live under `ContractCoding/knowledge/skills/*/SKILL.md`.
+- `TeamRuntime` runs each team in an isolated workspace, then sends the patch through a `QualityTransaction`: deterministic tests first, review verdict second, promotion only after both approve. Correctness gates focus on existence, syntax/import, smoke, interface shape, and placeholders; scale/LOC targets are reported as quality signals instead of blocking promotion. Repair items additionally pass exact locked validation before promotion.
+- `QualityTransactionRunner` coordinates `SliceJudge`, `IntegrationJudge`, and `RepairJudge` with a deterministic review layer. Review never invents product semantics; it checks whether test evidence is sufficient and whether worker claims respect allowed artifacts, locked tests, required context preflight, kernel-derived acceptance, canonical type ownership, and declared public behavior flows.
+- `RecoveryCoordinator` owns final failures as repair transactions, locks tests, detects no-progress fingerprints, and triggers targeted replan or human-required state.
 
-## Architecture
-
-```mermaid
-flowchart LR
-    U["User Task"] --> CLI["app/cli.py"]
-    CLI --> SVC["app/service.py"]
-    SVC --> PLAN["contract/ContractCompiler"]
-    PLAN --> CJ[".contractcoding/contract.json"]
-    SVC --> RUN["runtime/RunEngine V4"]
-    SVC --> CTX["knowledge/ContextManager"]
-
-    RUN --> SCH["runtime/Scheduler"]
-    SCH --> TW["Implementation TeamWave"]
-    TW --> TEX["runtime/TeamExecutor"]
-    RUN --> GATE["runtime/GateRunner"]
-    RUN --> STORE[".contractcoding/runs.sqlite"]
-    TEX --> AR["execution/AgentRunner"]
-    AR --> AG["agents/LLMAgent"]
-
-    AG --> TOOLS["tools/*"]
-    TOOLS --> GOV["tools/ToolGovernor"]
-```
-
-The current codebase is organized around these layers:
-
-- `ContractCoding/app/`
-  CLI and application service wiring.
-- `ContractCoding/agents/`
-  Agent classes, profile/capability registry, Runtime V4 prompts, and response parsing.
-- `ContractCoding/knowledge/`
-  Agent input packets, memory summaries, contract slicing, and built-in MVP skills for coding, research, math, paper writing, data, ops, and general delivery.
-- `ContractCoding/contract/`
-  ContractSpec V8 schema, compiler, file store, and Markdown renderer.
-- `ContractCoding/execution/`
-  Execution harness, execution planes, workspace routing, and agent running.
-- `ContractCoding/runtime/`
-  Durable run store, evidence ledger, scheduler, gate runner, autonomous steward, resumable run engine, and team executor.
-- `ContractCoding/quality/`
-  Self-checks, team/final deterministic gates, gate review parsing, failure routing, and eval helpers.
-- `ContractCoding/tools/`
-  File, code, search, math, and artifact sidecar tools.
-
-## Execution Flow
+## Flow
 
 ```mermaid
 flowchart TD
-    GOAL["User goal"] --> AUTO["run <task>"]
-    AUTO --> COMPILE["TaskClassifier + ContractCompiler"]
-    COMPILE --> CONTRACT["contract.json + contract.md"]
-    CONTRACT --> RUN["RunEngine + AutoRunSteward"]
-    RUN --> WAVE["Scheduler.next_wave"]
-    WAVE --> TEAM["TeamExecutor"]
-    TEAM --> SELF["deterministic self-check"]
-    SELF --> VERIFIED["WorkItem -> VERIFIED"]
-    VERIFIED --> TG["TeamGate"]
-    TG --> RECOVERY["RecoveryCoordinator"]
-    RECOVERY --> TG
-    TG --> PROMOTE["promotion"]
-    PROMOTE --> FG["FinalGate"]
-    FG --> COMPLETE["COMPLETED"]
+    TASK["User task"] --> COMPILE["ContractCompiler"]
+    COMPILE --> KERNEL["ProductKernel"]
+    KERNEL --> SUB["CanonicalSubstrate"]
+    COMPILE --> SLICES["FeatureSlice graph"]
+    SLICES --> SUBCON["TeamSubContracts"]
+    SUBCON --> CAPS["InterfaceCapsules"]
+    CAPS --> PQ["Plan quality: boundary check"]
+    PQ --> STORE["RunStore"]
+    STORE --> SCH["Scheduler team waves"]
+    SCH --> LOCK["Parallel capsule lock waves"]
+    LOCK --> SUB
+    SUB --> TEAM["Feature team: lead / workers / steward / reviewer"]
+    TEAM --> ISO["TeamRuntime isolated slice workspaces"]
+    ISO --> WORKER["OpenAIWorker or offline worker"]
+    WORKER --> QT["QualityTransaction: tests + review"]
+    QT --> PROMOTE["Promotion metadata + owner artifact copy"]
+    PROMOTE --> FINAL["Final QualityTransaction"]
+    FINAL --> DONE["COMPLETED"]
+    FINAL --> REPAIR["RecoveryCoordinator repair transaction"]
+    REPAIR --> SCH
 ```
 
-In practice, the runtime behaves like this:
+## Runtime Artifacts
 
-1. `run "<task>"` classifies the task, compiles a ContractSpec V8 contract, and writes `.contractcoding/contract.json`.
-2. `RunEngine` records a contract version in `.contractcoding/runs.sqlite`; `AutoRunSteward` drives resume loops.
-3. `Scheduler.next_wave()` selects ready team waves from dependencies, leases, conflict keys, serial groups, and resource limits.
-4. `TeamExecutor` runs each wave serially or in parallel, recording steps and evidence.
-5. Each completed item runs an implicit self-check and becomes `VERIFIED` only after deterministic checks pass.
-6. Once a team’s items are verified, `GateRunner` runs that team’s tests/review/gate; failures become diagnostics for `RecoveryCoordinator`.
-7. The run completes only after every required team is promoted and the final gate passes.
+- `.contractcoding/contract.json`
+- `.contractcoding/kernel/product_kernel.json`
+- `.contractcoding/kernel/canonical_substrate.json`
+- `.contractcoding/slices/<slice-id>.json`
+- `.contractcoding/teams/<feature-team-id>.json`
+- `.contractcoding/team_subcontracts/subcontract_<feature-team-id>.json`
+- `.contractcoding/team_states/<feature-team-id>.json`
+- `.contractcoding/interface_capsules/capsule_<feature-team-id>.json`
+- `.contractcoding/team_workspaces/<run-id>/<slice-id>/`
+- `.contractcoding/quality/<run-id>/<item-id>.json`
+- `.contractcoding/promotions/<run-id>/<slice-id>.json`
+- `.contractcoding/repairs/<run-id>/<transaction-id>.json`
+- `.contractcoding/monitor/<run-id>.json`
+- `.contractcoding/evals/<suite-id>.json`
 
-## Installation
+## CLI
 
 ```bash
-pip install -r requirements.txt
+python main.py --workspace /tmp/cc-demo run "Build package named atlas_ops with atlas_ops/__init__.py atlas_ops/core/engine.py tests/test_integration.py" --max-steps 20
+python main.py --workspace /tmp/cc-demo monitor <run_id> --json
+python main.py --workspace /tmp/cc-demo eval --suite large --max-steps 80
 ```
 
-## Run
+Use `--offline` for deterministic local runtime tests. Eval defaults to offline unless `RUN_OPENAI_E2E=1` is set.
 
-```bash
-API_KEY=... BASE_URL=... API_VERSION=... python main.py run "Write a Gomoku program with AI that allows players to play against AI" --backend openai
-```
-
-Useful flags:
-
-- `--workspace`: point tools and execution planes at a specific project workspace
-- `--log-path`: write runtime logs to a custom path
-- `--max-steps`: pause after a bounded number of implementation/gate steps
-
-The user-facing CLI is intentionally small:
-
-```bash
-python main.py status <task_id_or_run_id>
-python main.py events <task_id_or_run_id> --human
-python main.py events <task_id_or_run_id> --json
-```
-
-Compiled contracts are stored under `.contractcoding/contract.json` and `.contractcoding/contract.md`. Run state is stored under `.contractcoding/runs.sqlite`, including contract versions, leases, team runs, steps, events, and evidence.
-
-## LLM Backends
-
-The default and primary backend is the OpenAI-compatible API. Configure it with `API_KEY`, `BASE_URL`, `API_VERSION`, and optionally `MODEL_NAME` or `OPENAI_DEPLOYMENT_NAME`:
+OpenAI-compatible configuration:
 
 ```bash
 API_KEY=... BASE_URL=https://api.openai.com/v1 MODEL_NAME=gpt-5.4-2026-03-05 python main.py run "build the feature"
 ```
 
-The runtime uses OpenAI native tool calls, then executes every tool through ContractCoding's `ToolGovernor`, scoped file tools, self-checks, team gates, and final gates. API keys and endpoints are read from environment variables and are never rendered into reports.
+Credentials are read from environment variables and are not rendered into monitor, status, eval, or report output.
 
-Runtime reports use backend-neutral `llm_observability` for token, tool, retry, and failure summaries.
+## Current Modules
 
-## Context And Skills
-
-The `knowledge` layer is the input-control layer for long-running work. It keeps per-agent history, compresses older turns into summaries, slices the compiled contract into `AgentInputPacket`s, limits message size with `CONTEXT_MAX_CHARS`, and injects matching skills into each LLM step.
-
-Built-in MVP skills are enabled by default:
-
-- `general.delivery`
-- `coding.implementation`
-- `research.synthesis`
-- `math.reasoning`
-- `paper.writing`
-- `data.pipeline`
-- `ops.safety`
-- `eval.bench`
-
-Disable them with `ENABLE_BUILTIN_SKILLS=false` when testing a minimal custom skill set.
-
-Skills can be loaded from Markdown files or directories:
-
-```bash
-SKILL_PATHS="./my-skills/python/SKILL.md,./my-skills/research" python main.py run "build the feature"
-```
-
-A skill may include `allowed_work_kinds: coding,doc,research` to scope it to specific `WorkItem.kind` values. If omitted, it applies to all work kinds.
-
-## Prompt Layers
-
-The system prompt lives in `ContractCoding/agents/prompts.py`.
-
-ContractCoding intentionally uses one core system prompt with runtime overlays instead of many unrelated system prompts:
-
-- Core prompt: contract-first behavior, tool policy, evidence expectations, and output format.
-- Phase overlay: control plane, team execution, verification, or integration.
-- Profile prompt: role-specific behavior from `AgentProfile`.
-- Skill context: task-type guidance selected by the knowledge layer.
-
-This keeps the hierarchy stable while still adapting prompts for main-chain planning, team execution, and team verification.
-
-## Execution Plane Modes
-
-The runtime supports three execution modes through config:
-
-- `workspace`
-  Execute directly in the base workspace.
-- `sandbox`
-  Copy into an isolated working directory, validate there, then promote.
-- `worktree`
-  Use a git worktree when possible, while still inheriting dirty workspace state and enforcing safe promotion.
-
-## Extending Agents
-
-The clean extension point is `AgentForge`.
-
-1. Add or update capability/profile metadata in `ContractCoding/agents/profile.py`.
-2. Add the role prompt in `ContractCoding/agents/prompts.py`.
-3. Let `AgentForge` build the role with the right tool set.
-
-Example:
-
-```python
-from ContractCoding.agents.forge import AgentForge
-from ContractCoding.agents.profile import AgentCapability
-from ContractCoding.config import Config
-
-config = Config()
-forge = AgentForge(config)
-agent = forge.create_agent(
-    "Researcher",
-    AgentCapability(FILE=True, SEARCH=True),
-)
-```
-
-For full runtime wiring, register the agent on the service or engine:
-
-```python
-from ContractCoding.app.service import ContractCodingService
-from ContractCoding.config import Config
-
-service = ContractCodingService(Config())
-service.register_default_agents()
-```
+- `ContractCoding/contract/`: Product Kernel, Feature Slice, teams, promotions, replans, telemetry, compiler, and artifact store.
+- `ContractCoding/runtime/`: durable run store, scheduler, team runtime, engine, monitor, recovery coordinator, worker, and patch guard.
+- `ContractCoding/quality/`: quality transactions, finalization coordinator, slice/integration/repair judges, semantic lint, and eval suites.
+- `ContractCoding/knowledge/`: progressive-disclosure built-in skills plus visible `SKILL.md` files for planning, code generation, test/review, repair, and tool use.
+- `ContractCoding/knowledge/prompting.py`: worker prompt overlays and packets that provide only the team subcontract, current slice, direct dependency capsules, canonical substrate, and required preflight tools.
+- `ContractCoding/tools/` and `ContractCoding/llm/`: retained OpenAI native tool-call path and governed tools. Tool catalog includes filesystem tools, `contract_snapshot`, `inspect_module_api`, `run_public_flow`, `run_code`, web search, and math.
 
 ## Development
-
-Compile and run the regression suite with:
 
 ```bash
 python3 -m compileall ContractCoding main.py tests
 python3 -m unittest discover -s tests -v
+python3 main.py --workspace /tmp/cc-v5-large --offline eval --suite large --max-steps 80
 ```
-
-## Architecture Docs
-
-- [Current Architecture](docs/current-architecture.md)
-- [vNext Execution Plane Design](docs/vnext-execution-plane.md)

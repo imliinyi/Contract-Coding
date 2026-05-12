@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import py_compile
+from queue import Empty, Queue
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -329,11 +333,29 @@ class OpenAIBackend(LLMBackend):
 
         if current_iteration >= max_iterations:
             logger.warning("Max tool call iterations reached: %s", max_iterations)
-            if not stop_reason:
+            auto_submit = self._auto_submit_allowed_artifacts()
+            if auto_submit and not terminal_result:
+                terminal_result = auto_submit
+                stop_reason = "auto_submit_on_iteration_budget"
+                failure_kind = ""
+                failure_message = ""
+                infra_failure = False
+                last_content = self._terminal_content(terminal_result)
+            elif not stop_reason:
                 stop_reason = "max_tool_iterations"
                 infra_failure = True
                 failure_kind = failure_kind or "tool_loop_exhausted"
                 failure_message = failure_message or f"Max tool call iterations reached: {max_iterations}"
+
+        if infra_failure and not terminal_result and failure_kind == "timeout":
+            auto_submit = self._auto_submit_allowed_artifacts()
+            if auto_submit:
+                terminal_result = auto_submit
+                stop_reason = "auto_submit_after_timeout"
+                failure_kind = ""
+                failure_message = ""
+                infra_failure = False
+                last_content = self._terminal_content(terminal_result)
 
         return LLMResponse(
             content=last_content,
@@ -348,6 +370,8 @@ class OpenAIBackend(LLMBackend):
                 "error": failure_message,
                 "stop_reason": stop_reason,
                 "terminal_result": terminal_result,
+                "tool_calls": len(all_intents),
+                "tool_call_count": len(all_intents),
                 "tool_iterations": current_iteration,
             },
             prompt_tokens=prompt_tokens,
@@ -372,8 +396,9 @@ class OpenAIBackend(LLMBackend):
                 "your patch was rejected and the file was restored; read the suggested range and repair again in the "
                 "same conversation. If the needed artifact is outside allowed scope, call report_blocker or return "
                 "structured blocker JSON instead of editing around it. When the work is complete, call submit_result "
-                "with changed files and evidence. Treat submit_result and report_blocker as terminal actions; do not "
-                "continue making tool calls after them."
+                "with changed files and evidence; this is the worker completion packet. If the contract itself is "
+                "ambiguous, report a blocker rather than natural-language success. Treat submit_result and "
+                "report_blocker as terminal actions; do not continue making tool calls after them."
             ),
         }
 
@@ -423,6 +448,47 @@ class OpenAIBackend(LLMBackend):
         if risks:
             lines.append("Risks: " + "; ".join(risks))
         return "<output>" + "\n".join(lines) + "</output>"
+
+    def _auto_submit_allowed_artifacts(self) -> Dict[str, Any]:
+        """Close a worker loop when files exist but the model forgets submit_result."""
+        workspace = os.path.abspath(str(getattr(self, "workspace_dir", ".") or "."))
+        changed: List[str] = []
+        missing: List[str] = []
+        compile_errors: List[str] = []
+        for artifact in list(getattr(self, "allowed_artifacts", []) or []):
+            normalized = os.path.normpath(str(artifact or "")).replace("\\", "/").strip("/")
+            if not normalized or normalized.startswith("../"):
+                continue
+            full_path = os.path.abspath(os.path.join(workspace, normalized))
+            if full_path != workspace and not full_path.startswith(workspace + os.sep):
+                continue
+            if os.path.isfile(full_path):
+                if normalized.endswith(".py"):
+                    try:
+                        py_compile.compile(full_path, doraise=True)
+                    except py_compile.PyCompileError as exc:
+                        compile_errors.append(f"{normalized}: {exc}")
+                        continue
+                changed.append(normalized)
+            else:
+                missing.append(normalized)
+        if missing or compile_errors:
+            return {}
+        if not changed:
+            return {}
+        return {
+            "tool_name": "submit_result",
+            "summary": "Runtime auto-submit: owner artifacts exist after tool iteration budget.",
+            "changed_files": changed,
+            "evidence": [
+                "auto_submit_on_iteration_or_timeout_budget",
+                f"owner_artifacts_present:{len(changed)}",
+                "owner_artifacts_compile:pass",
+            ],
+            "risks": [
+                "Model did not call submit_result before the tool/timeout budget; SliceJudge and promotion still validate the files."
+            ],
+        }
 
     def _build_patch_guard(self):
         try:
@@ -479,7 +545,7 @@ class OpenAIBackend(LLMBackend):
             retry += 1
             started = time.perf_counter()
             try:
-                response = self.client.chat.completions.create(**adapted_kwargs)
+                response = self._create_chat_completion_with_deadline(adapted_kwargs)
                 attempts.append(
                     {
                         "attempt": retry,
@@ -514,6 +580,30 @@ class OpenAIBackend(LLMBackend):
                     raise
                 if retry_sleep_seconds:
                     time.sleep(min(sleep_s, retry_sleep_seconds))
+
+    def _create_chat_completion_with_deadline(self, kwargs: Dict[str, Any]):
+        timeout = max(1.0, float(kwargs.get("timeout") or self.request_timeout or 120))
+        hard_timeout = timeout + min(5.0, max(0.5, timeout * 0.1))
+        result_queue: Queue[tuple[bool, Any]] = Queue(maxsize=1)
+
+        def run_call() -> None:
+            try:
+                result_queue.put((True, self.client.chat.completions.create(**kwargs)))
+            except Exception as exc:
+                result_queue.put((False, exc))
+
+        thread = threading.Thread(target=run_call, daemon=True)
+        thread.start()
+        thread.join(hard_timeout)
+        if thread.is_alive():
+            raise TimeoutError(f"OpenAI chat completion hard timeout after {hard_timeout:.1f} seconds")
+        try:
+            ok, value = result_queue.get_nowait()
+        except Empty as exc:
+            raise TimeoutError("OpenAI chat completion ended without returning a response") from exc
+        if ok:
+            return value
+        raise value
 
     def _remaining_tool_timeout(self, started_at: float, *, elapsed: float | None = None) -> int:
         timeout = self.tool_timeout

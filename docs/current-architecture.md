@@ -1,56 +1,92 @@
 # Current Architecture
 
-ContractCoding is currently an OpenAI-first, contract-driven long-running runtime built around **ContractSpec V8 + Runtime V4**. The OpenAI API is the only supported LLM path.
+ContractCoding on `dev/long-running-agent` is **ContractSpec V8 / Runtime V5**.
 
-## System Overview
+The active paradigm is **Product Kernel + Canonical Substrate + Team Subcontract + Interface Capsule + Feature Slice + Quality Transaction + Repair Transaction**. The previous Runtime V4 module-team/gate-runner/failure-router path was removed from the runtime surface. OpenAI remains the primary real backend; the deterministic worker exists for offline evals and tests.
 
-```mermaid
-flowchart LR
-    U["User Task"] --> CLI["app/cli.py"]
-    CLI --> SVC["app/service.py"]
-    SVC --> PLAN["contract/ContractCompiler"]
-    PLAN --> CONTRACT[".contractcoding/contract.json"]
-    SVC --> RUN["runtime/RunEngine"]
-    RUN --> LOOP["runtime/RunLoop"]
-    LOOP --> SCH["runtime/Scheduler"]
-    SCH --> TEAM["runtime/TeamExecutor"]
-    TEAM --> AG["agents/LLMAgent"]
-    AG --> OPENAI["llm/OpenAIBackend"]
-    OPENAI --> TOOLS["tools/* via ToolGovernor"]
-    TEAM --> GATES["runtime/GateRunner"]
-    GATES --> RECOVERY["runtime/RecoveryCoordinator"]
-    RECOVERY --> TEAM
-    GATES --> PROMOTE["runtime/TeamRuntime promotion"]
-    RUN --> STORE["runtime/RunStore"]
-```
+## Components
 
-## Runtime Model
+- `contract/spec.py`
+  Defines `ProductKernel`, `CanonicalSubstrate`, `FeatureSlice`, `FeatureTeam`, `TeamSubContract`, `InterfaceCapsule`, `TeamSpec`, `TeamStateRecord`, `WorkItem`, `PromotionRecord`, `QualityTransactionRecord`, `RepairTransaction`, `ReplanRecord`, and backend-neutral `LLMTelemetry`.
+- `contract/compiler.py`
+  Freezes product semantics and team boundaries, creates feature-slice graph, emits canonical substrate dependencies, declares public behavior probes, emits team subcontracts and `INTENT` interface capsules, adds parallel capsule lock work items, runs plan-quality boundary checks, and materializes implementation/acceptance work items. It does not attempt to predesign every class or private API.
+- `runtime/scheduler.py`
+  Produces ready feature-team waves from dependency status, phase, and conflict keys. Capsule-lock work forms the first async phase and can run across teams in parallel. Canonical substrate slices land before consumers. A wave may contain multiple ready items for one team when its internal serial edges and conflict keys allow safe parallelism.
+- `runtime/team.py`
+  Creates isolated team workspaces, runs slice workers, delegates all test/review decisions to `QualityTransactionRunner`, classifies owned/unowned/missing files, promotes verified owner artifacts, and writes promotion metadata.
+- `runtime/engine.py`
+  Drives resumable runs through scheduler, team runtime, store, and monitor. Final integration decisions are delegated to `quality/finalization.py` so the scheduling loop does not own test/review/repair policy.
+- `quality/finalization.py`
+  Owns final integration coordination: run final quality transaction, mark completion, or open/block central repair through the recovery coordinator.
+- `runtime/recovery.py`
+  Owns central final repair transactions. It locks tests, scopes patch artifacts, detects repeated fingerprints/no-progress, opens targeted replans, or marks human-required.
+- `quality/gates.py`
+  Provides `SliceJudge`, `CapsuleJudge`, `IntegrationJudge`, and `RepairJudge`. Slice gates check existence, syntax/import, placeholder absence, interface contracts, slice smoke, and slice-level canonical ownership. Final integration checks required artifacts, compile/import, declared tests, public paths, declared public behavior probes, semantic lint, canonical type ownership, and unresolved marked mocks. Scale/LOC budgets are emitted as non-blocking quality signals. Repair gates run exact locked validation before promotion. Diagnostics include kernel invariant, acceptance id, artifact, and slice id where available.
+- `quality/transaction.py`
+  Provides the unified test+review transaction. Capsule, slice, repair, and final integration tests run first; review then decides `APPROVE`, `REQUEST_CHANGES`, `NEED_MORE_TESTS`, or `SEMANTIC_REPLAN` from the test evidence, changed files, allowed artifacts, locked tests, required OpenAI context preflight, and frozen kernel policy. It writes `.contractcoding/quality/<run-id>/<item-id>.json`.
+- `knowledge/`
+  Provides compact progressive-disclosure skills for product planning, feature slice design, dependency interface consumption, interface authoring, code generation, test authoring, tool use, evidence, repair, and replan. Human-visible skill files live in `knowledge/skills/<skill>/SKILL.md`; `knowledge/manager.py` merges them with fallback built-ins. `knowledge/prompting.py` builds worker packets that make agents responsible for local design and validation while the runtime stays a scheduler/gate/promotion/fallback control plane.
+- `tools/`
+  Provides governed OpenAI native tools. Filesystem tools handle bounded reads/writes; contract-aware tools expose `contract_snapshot`, `inspect_module_api`, and `run_public_flow` so workers can inspect contracts and verify public flows without relying on hidden context.
 
-- `ContractSpec V8` is the plan source of truth: work scopes, work items, interfaces, team gates, final gate, execution policy, and recovery guardrails.
-- `RunStore` persists runtime facts only: task/run status, contract versions, leases, team workspaces, steps, events, gates, evidence, and repair tickets.
-- `Scheduler` produces ready team waves from dependency, phase, conflict-key, lease, and parallelism policy.
-- `TeamExecutor` runs scoped work items in the active team workspace and records backend-neutral `llm_observability`.
-- `GateRunner` performs deterministic team/final checks and emits structured diagnostics.
-- `RecoveryCoordinator` owns global review/repair decisions, opens auditable repair plans, and reopens only targeted owner work.
-- `TeamRuntime` owns durable scope teams, isolated workspaces, dependency refresh, and promotion after local verification.
+## Runtime Flow
 
-## OpenAI-First Backend Policy
+1. `ContractCompiler.compile(task)` extracts required artifacts and builds the Product Kernel.
+2. The compiler builds the Canonical Substrate from kernel type ownership. Shared value-object owner slices become early substrate work; enum/status owner slices wait on the value-object substrate when needed.
+3. The compiler groups artifacts into feature teams and feature slices. It freezes product semantics and ownership, but leaves concrete implementation APIs progressive.
+4. Each feature team receives a `TeamSubContract` and an `INTENT` `InterfaceCapsule`: public modules, capabilities, canonical imports, key signatures, examples, fixtures, smoke checks, consumers, compatibility policy, and a version.
+5. Plan quality checks the team graph, canonical substrate dependencies, subcontract coverage, and capsule lock work items. A bad boundary plan is rejected before workers edit files.
+6. `RunStore` persists the run record and JSONL events.
+7. `Scheduler.ready_team_waves()` first exposes non-conflicting `team.capsule` waves, so multiple teams can lock interface capsules concurrently.
+8. Once a team's capsule item is verified, `TeamRuntime` marks its capsule `LOCKED`; downstream work can depend on that stable contract rather than a guessed API.
+9. Canonical substrate waves run before consumer implementation waves.
+10. Implementation waves then run by dependency/phase/conflict keys. Runtime executes different feature-team waves concurrently. Inside one team, multiple ready slices may run in parallel only when they have no internal dependency edge and no shared conflict key.
+11. `TeamRuntime` copies the base workspace into `.contractcoding/team_workspaces/<run-id>/<slice-id>/`.
+12. The worker edits only `allowed_artifacts`; OpenAI workers use native tool calls through governed file/code/contract/search/math tools.
+13. Agent packets include only the team subcontract, current slice, direct dependency capsules, canonical substrate, required preflight tools, and compact skills.
+14. `QualityTransactionRunner` runs capsule/slice tests, then review checks whether the evidence is sufficient and whether worker claims stayed inside the contract. LOC/scale targets are quality signals, not promotion blockers.
+15. `TeamRuntime` promotes only owner artifacts and writes `.contractcoding/promotions/<run-id>/<slice-id>.json`.
+16. Final integration also runs as a `QualityTransaction`: `IntegrationJudge` checks required artifacts, compile/import, declared tests, kernel public paths, declared public behavior flows, canonical type ownership, semantic lint, and unresolved marked temporary mocks; review approves or routes the diagnostics.
+17. Final failures go to `RecoveryCoordinator`, not back to ordinary slice teams.
 
-The default backend is `openai`. It uses native tool calls, but all tools still execute through ContractCoding's policy layer:
+## Repair And Replan
 
-- `ToolGovernor` restricts writes to the work item's allowed artifacts and conflict keys.
-- `PatchGuard` can roll back invalid repair writes before they pollute the workspace.
-- Self-checks, team gates, and final gates decide completion; LLM claims are advisory.
-- API credentials are read from `API_KEY`, `BASE_URL`, and `API_VERSION` and are not logged or rendered.
+A repair transaction records:
 
-Runtime control flow does not run backend-specific probes. Provider facts are recorded only through backend-neutral `llm_observability`.
+- failure fingerprint
+- root kernel invariant
+- allowed artifacts
+- locked tests
+- validation commands
+- pre-patch artifact hashes
+- patch plan
+- expected behavior delta
+- last validation result
+- attempts and no-progress count
+- evidence
 
-## Long-Running Guarantees
+Repair runs in a team workspace copied from the main workspace. If exact validation fails, the patch is not promoted, so the main workspace remains unchanged.
 
-The current implementation is optimized for resumable work rather than a single endless model context:
+If the same fingerprint repeats or repair produces no owned-file patch, the coordinator opens a targeted `ReplanRecord` for affected slices. If replan budget is exhausted or no legal owner can be found, the transaction becomes `HUMAN_REQUIRED`.
 
-1. Durable contract and run ledgers survive process restarts.
-2. Stale running items and gates are recovered before new dispatch.
-3. Parallel teams operate through scoped leases and conflict keys.
-4. Isolated workspaces can be promoted only after deterministic gates pass.
-5. Reports summarize phase, artifact coverage, team state, gate state, repair tickets, timing, and backend-neutral LLM telemetry.
+## Observability
+
+`monitor --json` includes:
+
+- run phase and status
+- ready wave
+- ready feature-team waves with internal parallel/serial mode
+- kernel acceptance/invariants/semantic invariants
+- slices and items
+- teams and team workspaces
+- team states, including locked capsules, ready items, active items, mailbox requests, and waiting capsules
+- team subcontracts and interface capsule versions/lock status
+- promotions
+- quality transactions with test evidence, review evidence, verdict, and diagnostics
+- repair transactions
+- replans
+- backend-neutral LLM telemetry
+- quality signals, including requested LOC target vs current observed LOC, without treating LOC as a hard gate
+- latest final diagnostics
+
+The monitor intentionally does not render `API_KEY`, `BASE_URL`, or `API_VERSION` values.

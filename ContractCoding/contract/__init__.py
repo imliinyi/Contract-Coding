@@ -1,13 +1,41 @@
 from ContractCoding.contract.compiler import ContractCompiler
-from ContractCoding.contract.spec import ContractSpec, ContractValidationError, WorkScope
+from ContractCoding.contract.spec import (
+    CONTRACT_VERSION,
+    AgentSpec,
+    CanonicalSubstrate,
+    ContractSpec,
+    ContractValidationError,
+    FeatureSlice,
+    FeatureTeam,
+    InterfaceCapsule,
+    LLMTelemetry,
+    ProductKernel,
+    PromotionRecord,
+    ReplanRecord,
+    RepairTransaction,
+    TeamSubContract,
+    TeamSpec,
+    WorkItem,
+)
 from ContractCoding.contract.store import ContractFileStore
-from ContractCoding.contract.work_item import WorkItem
 
 __all__ = [
+    "CONTRACT_VERSION",
+    "AgentSpec",
+    "CanonicalSubstrate",
     "ContractCompiler",
     "ContractFileStore",
     "ContractSpec",
     "ContractValidationError",
+    "FeatureSlice",
+    "FeatureTeam",
+    "InterfaceCapsule",
+    "LLMTelemetry",
+    "ProductKernel",
+    "PromotionRecord",
+    "ReplanRecord",
+    "RepairTransaction",
+    "TeamSubContract",
+    "TeamSpec",
     "WorkItem",
-    "WorkScope",
 ]
