@@ -1,3 +1,3 @@
-from ContractCoding.app.service import ContractCodingService
+from .service import ContractCodingService, TickReport
 
-__all__ = ["ContractCodingService"]
+__all__ = ["ContractCodingService", "TickReport"]

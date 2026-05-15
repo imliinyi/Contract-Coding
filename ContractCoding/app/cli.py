@@ -1,114 +1,208 @@
+"""ContractCoding CLI.
+
+Subcommands map directly to the registry-based runtime lifecycle:
+
+    onboard       — register + freeze a PlanSpec (read from a JSON file)
+    activate      — bootstrap a team's working_paper + task_ledger
+    tick          — run one orchestration tick
+    run           — orchestrate until idle (or `--max-ticks`)
+    status        — print current plan + per-team task counts
+    events        — tail the event log
+    escalations   — list open escalations
+
+Plan/team JSON examples live in `examples/`.
+"""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from ContractCoding.app.service import ContractCodingService
-from ContractCoding.config import Config
-from ContractCoding.quality.evals import EvalSuiteRunner, default_eval_cases
+from .service import ContractCodingService
+from ..config import Config
+from ..contract.project import BoundedContext, IntentLedger, Invariant, PlanSpec
+from ..memory.ledgers import TaskItem
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="ContractCoding Runtime V5: Product Kernel long-running agent")
+    parser = argparse.ArgumentParser(
+        description="ContractCoding: registry-based long-running multi-agent runtime",
+    )
     parser.add_argument("--workspace", type=str, help="Workspace directory")
     parser.add_argument("--log-path", type=str, help="Path to agent log file")
-    parser.add_argument("--max-steps", type=int, help="Maximum runtime steps")
-    parser.add_argument("--offline", dest="global_offline", action="store_true", help="Use deterministic offline worker instead of OpenAI")
+    parser.add_argument("--offline", action="store_true", help="Use NullLLMPort (deterministic offline)")
+
     sub = parser.add_subparsers(dest="command")
 
-    run = sub.add_parser("run", help="Plan and run a task")
-    run.add_argument("task")
-    run.add_argument("--max-steps", type=int)
-    run.add_argument("--offline", action="store_true")
+    onboard = sub.add_parser("onboard", help="Register and freeze a plan from JSON")
+    onboard.add_argument("plan_file", help="Path to plan JSON")
+    onboard.add_argument("--no-freeze", action="store_true", help="Leave plan unfrozen")
 
-    resume = sub.add_parser("resume", help="Resume a run")
-    resume.add_argument("run_id")
-    resume.add_argument("--max-steps", type=int)
-    resume.add_argument("--offline", action="store_true")
+    activate = sub.add_parser("activate", help="Bootstrap a team from JSON")
+    activate.add_argument("team_file", help="Path to team-tasks JSON")
 
-    status = sub.add_parser("status", help="Show run status")
-    status.add_argument("run_id")
+    tick = sub.add_parser("tick", help="Run a single orchestration tick")
+    tick.add_argument("--max-per-team", type=int, default=1)
+
+    run = sub.add_parser("run", help="Run orchestration until idle")
+    run.add_argument("--max-ticks", type=int)
+    run.add_argument("--max-per-team", type=int, default=1)
+
+    status = sub.add_parser("status", help="Show plan + team status")
     status.add_argument("--json", action="store_true")
 
-    graph = sub.add_parser("graph", help="Show run graph")
-    graph.add_argument("run_id")
-    graph.add_argument("--json", action="store_true")
-
-    events = sub.add_parser("events", help="Show run events")
-    events.add_argument("run_id")
+    events = sub.add_parser("events", help="Tail the event log")
     events.add_argument("--limit", type=int, default=50)
     events.add_argument("--json", action="store_true")
 
-    monitor = sub.add_parser("monitor", help="Show monitor snapshot")
-    monitor.add_argument("run_id")
-    monitor.add_argument("--json", action="store_true")
+    escalations = sub.add_parser("escalations", help="List open escalations")
+    escalations.add_argument("--json", action="store_true")
 
-    eval_cmd = sub.add_parser("eval", help="Run built-in evals")
-    eval_cmd.add_argument("--suite", choices=["smoke", "medium", "large", "stress"], default="smoke")
-    eval_cmd.add_argument("--max-steps", type=int)
-    eval_cmd.add_argument("--offline", action="store_true")
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+# ---------------------------------------------------------------------------
+# JSON loaders
+# ---------------------------------------------------------------------------
+
+
+def _read_json(path: str) -> Dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _plan_from_json(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise plan JSON into kwargs for `service.onboard`."""
+    bcs = [
+        BoundedContext.from_mapping(b) if hasattr(BoundedContext, "from_mapping")
+        else BoundedContext(**b)
+        for b in payload.get("bounded_contexts", [])
+    ]
+    invariants = [
+        Invariant.from_mapping(i) if hasattr(Invariant, "from_mapping")
+        else Invariant(**i)
+        for i in payload.get("invariants", []) or []
+    ]
+    return {
+        "goal": str(payload.get("goal", "")),
+        "bounded_contexts": bcs,
+        "invariants": invariants,
+        "acceptance_signals": list(payload.get("acceptance_signals", []) or []),
+        "non_goals": list(payload.get("non_goals", []) or []),
+        "assumptions": list(payload.get("assumptions", []) or []),
+        "plan_version": str(payload.get("plan_version", "v1")),
+    }
+
+
+def _tasks_from_json(items: List[Dict[str, Any]]) -> List[TaskItem]:
+    out: List[TaskItem] = []
+    for raw in items:
+        if hasattr(TaskItem, "from_mapping"):
+            out.append(TaskItem.from_mapping(raw))
+        else:
+            out.append(TaskItem(**raw))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if not args.command:
         parser.print_help()
-        return
+        return 0
+
     config = _config(args)
     service = ContractCodingService(config)
-    offline = bool(
-        getattr(args, "global_offline", False)
-        or getattr(args, "offline", False)
-        or os.getenv("CONTRACTCODING_OFFLINE_WORKER")
-    )
+    offline = bool(getattr(args, "offline", False) or os.getenv("OFFLINE_LLM"))
+
+    if args.command == "onboard":
+        payload = _read_json(args.plan_file)
+        kwargs = _plan_from_json(payload)
+        plan = service.onboard(freeze=not args.no_freeze, **kwargs)
+        print(service.json_dumps({
+            "goal": plan.intent.goal,
+            "frozen": plan.frozen,
+            "teams": [c.team_id for c in plan.bounded_contexts],
+        }))
+        return 0
+
+    if args.command == "activate":
+        payload = _read_json(args.team_file)
+        team_id = str(payload["team_id"])
+        tasks = _tasks_from_json(payload.get("initial_tasks", []) or [])
+        service.activate_team(team_id, initial_tasks=tasks)
+        print(service.json_dumps({"team_id": team_id, "tasks_seeded": len(tasks)}))
+        return 0
+
+    if args.command == "tick":
+        report = service.tick(offline=offline, max_per_team=args.max_per_team)
+        print(service.json_dumps(report.__dict__))
+        return 0
 
     if args.command == "run":
-        result = service.run_auto(args.task, max_steps=args.max_steps or getattr(args, "max_steps", None), offline=offline)
-        print(f"Run ID: {result.run_id}")
-        print(f"Status: {result.status}")
-        print(result.report)
-        return
-    if args.command == "resume":
-        result = service.resume_run_auto(args.run_id, max_steps=args.max_steps, offline=offline)
-        print(f"Run ID: {result.run_id}")
-        print(f"Status: {result.status}")
-        print(result.report)
-        return
+        reports = service.orchestrate(
+            offline=offline,
+            max_ticks=args.max_ticks,
+            max_per_team=args.max_per_team,
+        )
+        totals = {
+            "ticks": len(reports),
+            "ran_tasks": sum(r.ran_tasks for r in reports),
+            "approved": sum(r.approved for r in reports),
+            "rejected": sum(r.rejected for r in reports),
+            "spirals": sorted({t for r in reports for t in r.spiral_team_ids}),
+        }
+        print(service.json_dumps(totals))
+        return 0
+
     if args.command == "status":
-        payload = service.run_status(args.run_id)
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) if args.json else payload.get("report", ""))
-        return
-    if args.command == "graph":
-        payload = service.run_graph(args.run_id)
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        payload = service.status()
+        print(service.json_dumps(payload) if args.json else _format_status(payload))
+        return 0
+
     if args.command == "events":
-        payload = service.run_events(args.run_id, limit=args.limit)
+        payload = service.events(limit=args.limit)
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            print(service.json_dumps(payload))
         else:
-            for event in payload:
-                print(f"{event.get('time')} {event.get('type')} {event.get('payload')}")
-        return
-    if args.command == "monitor":
-        payload = service.run_monitor(args.run_id)
-        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) if args.json else payload.get("report", ""))
-        return
-    if args.command == "eval":
-        runner = EvalSuiteRunner(service.run_engine)
-        eval_offline = bool(args.offline or offline or os.getenv("RUN_OPENAI_E2E", "") not in {"1", "true", "yes"})
-        results = runner.run(default_eval_cases(args.suite), max_steps=args.max_steps, offline=eval_offline)
-        artifact = runner.write(args.suite, results)
-        print(json.dumps({"artifact": artifact, "results": [result.to_record() for result in results]}, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+            for evt in payload:
+                print(f"{evt.get('created_at', 0):.0f} {evt.get('kind')} {evt.get('team_id')} {evt.get('payload')}")
+        return 0
+
+    if args.command == "escalations":
+        payload = service.list_escalations()
+        print(service.json_dumps(payload))
+        return 0
+
+    parser.print_help()
+    return 1
+
+
+def _format_status(payload: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    plan = payload.get("plan")
+    if plan is None:
+        return "(no plan onboarded)"
+    lines.append(f"Goal: {plan.get('goal')}")
+    lines.append(f"Frozen: {plan.get('frozen')}  Version: {plan.get('version')}")
+    lines.append("Teams:")
+    for t in payload.get("teams", []):
+        lines.append(
+            f"  - {t['team_id']:<20} {t['tasks_done']}/{t['tasks_total']} done  | {t['purpose']}"
+        )
+    return "\n".join(lines)
 
 
 def _config(args: argparse.Namespace) -> Config:
-    values = {}
+    values: Dict[str, Any] = {}
     if getattr(args, "workspace", None):
         values["WORKSPACE_DIR"] = args.workspace
     if getattr(args, "log_path", None):
@@ -117,4 +211,4 @@ def _config(args: argparse.Namespace) -> Config:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

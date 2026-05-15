@@ -1,92 +1,152 @@
 # Current Architecture
 
-ContractCoding on `dev/long-running-agent` is **ContractSpec V8 / Runtime V5**.
+This document describes the code currently present in the repository. It does
+not describe removed Runtime V4/V5 modules or planned quality-transaction
+systems that are not implemented in this tree.
 
-The active paradigm is **Product Kernel + Canonical Substrate + Team Subcontract + Interface Capsule + Feature Slice + Quality Transaction + Repair Transaction**. The previous Runtime V4 module-team/gate-runner/failure-router path was removed from the runtime surface. OpenAI remains the primary real backend; the deterministic worker exists for offline evals and tests.
+## Layers
 
-## Components
+- `contract/`
+  Defines the durable public model: `ProjectContract`, `TeamContract`,
+  `ContractOperation`, `ContractObligation`, `ContractKernel`,
+  `TeamWorkItem`, `TeamWave`, `ChangeSet`, `ValidationEvidence`, and
+  `InterfaceCapsuleV2`.
+- `registry/`
+  Provides the filesystem registry, path-scoped ACL, and `RegistryTool`.
+  Worker code should use `RegistryTool`, not the backend directly.
+- `memory/`
+  Stores role prompts, skill cards, ledgers, interaction logs, failure memory,
+  and reviewer memory.
+- `knowledge/skills/`
+  Contains human-visible skill folders. Runtime skills expose a short
+  `## Runtime prompt`; heavier notes and helper programs live in
+  `references/` and `scripts/`.
+- `worker/`
+  Contains `ContextPacket`, the LLM port, pass implementations, and
+  `WorkerPipeline`.
+- `agents/`
+  Contains the coordinator, reducer, auditor, scheduler, reviewer, steward,
+  and escalation logic.
+- `app/`
+  Wraps the coordinator and per-team pipelines for CLI/service use.
 
-- `contract/spec.py`
-  Defines `ProductKernel`, `CanonicalSubstrate`, `FeatureSlice`, `FeatureTeam`, `TeamSubContract`, `InterfaceCapsule`, `TeamSpec`, `TeamStateRecord`, `WorkItem`, `PromotionRecord`, `QualityTransactionRecord`, `RepairTransaction`, `ReplanRecord`, and backend-neutral `LLMTelemetry`.
-- `contract/compiler.py`
-  Freezes product semantics and team boundaries, creates feature-slice graph, emits canonical substrate dependencies, declares public behavior probes, emits team subcontracts and `INTENT` interface capsules, adds parallel capsule lock work items, runs plan-quality boundary checks, and materializes implementation/acceptance work items. It does not attempt to predesign every class or private API.
-- `runtime/scheduler.py`
-  Produces ready feature-team waves from dependency status, phase, and conflict keys. Capsule-lock work forms the first async phase and can run across teams in parallel. Canonical substrate slices land before consumers. A wave may contain multiple ready items for one team when its internal serial edges and conflict keys allow safe parallelism.
-- `runtime/team.py`
-  Creates isolated team workspaces, runs slice workers, delegates all test/review decisions to `QualityTransactionRunner`, classifies owned/unowned/missing files, promotes verified owner artifacts, and writes promotion metadata.
-- `runtime/engine.py`
-  Drives resumable runs through scheduler, team runtime, store, and monitor. Final integration decisions are delegated to `quality/finalization.py` so the scheduling loop does not own test/review/repair policy.
-- `quality/finalization.py`
-  Owns final integration coordination: run final quality transaction, mark completion, or open/block central repair through the recovery coordinator.
-- `runtime/recovery.py`
-  Owns central final repair transactions. It locks tests, scopes patch artifacts, detects repeated fingerprints/no-progress, opens targeted replans, or marks human-required.
-- `quality/gates.py`
-  Provides `SliceJudge`, `CapsuleJudge`, `IntegrationJudge`, and `RepairJudge`. Slice gates check existence, syntax/import, placeholder absence, interface contracts, slice smoke, and slice-level canonical ownership. Final integration checks required artifacts, compile/import, declared tests, public paths, declared public behavior probes, semantic lint, canonical type ownership, and unresolved marked mocks. Scale/LOC budgets are emitted as non-blocking quality signals. Repair gates run exact locked validation before promotion. Diagnostics include kernel invariant, acceptance id, artifact, and slice id where available.
-- `quality/transaction.py`
-  Provides the unified test+review transaction. Capsule, slice, repair, and final integration tests run first; review then decides `APPROVE`, `REQUEST_CHANGES`, `NEED_MORE_TESTS`, or `SEMANTIC_REPLAN` from the test evidence, changed files, allowed artifacts, locked tests, required OpenAI context preflight, and frozen kernel policy. It writes `.contractcoding/quality/<run-id>/<item-id>.json`.
-- `knowledge/`
-  Provides compact progressive-disclosure skills for product planning, feature slice design, dependency interface consumption, interface authoring, code generation, test authoring, tool use, evidence, repair, and replan. Human-visible skill files live in `knowledge/skills/<skill>/SKILL.md`; `knowledge/manager.py` merges them with fallback built-ins. `knowledge/prompting.py` builds worker packets that make agents responsible for local design and validation while the runtime stays a scheduler/gate/promotion/fallback control plane.
-- `tools/`
-  Provides governed OpenAI native tools. Filesystem tools handle bounded reads/writes; contract-aware tools expose `contract_snapshot`, `inspect_module_api`, and `run_public_flow` so workers can inspect contracts and verify public flows without relying on hidden context.
+## Contract Runtime
 
-## Runtime Flow
+The runtime is contract-driven rather than message-subscription-driven:
 
-1. `ContractCompiler.compile(task)` extracts required artifacts and builds the Product Kernel.
-2. The compiler builds the Canonical Substrate from kernel type ownership. Shared value-object owner slices become early substrate work; enum/status owner slices wait on the value-object substrate when needed.
-3. The compiler groups artifacts into feature teams and feature slices. It freezes product semantics and ownership, but leaves concrete implementation APIs progressive.
-4. Each feature team receives a `TeamSubContract` and an `INTENT` `InterfaceCapsule`: public modules, capabilities, canonical imports, key signatures, examples, fixtures, smoke checks, consumers, compatibility policy, and a version.
-5. Plan quality checks the team graph, canonical substrate dependencies, subcontract coverage, and capsule lock work items. A bad boundary plan is rejected before workers edit files.
-6. `RunStore` persists the run record and JSONL events.
-7. `Scheduler.ready_team_waves()` first exposes non-conflicting `team.capsule` waves, so multiple teams can lock interface capsules concurrently.
-8. Once a team's capsule item is verified, `TeamRuntime` marks its capsule `LOCKED`; downstream work can depend on that stable contract rather than a guessed API.
-9. Canonical substrate waves run before consumer implementation waves.
-10. Implementation waves then run by dependency/phase/conflict keys. Runtime executes different feature-team waves concurrently. Inside one team, multiple ready slices may run in parallel only when they have no internal dependency edge and no shared conflict key.
-11. `TeamRuntime` copies the base workspace into `.contractcoding/team_workspaces/<run-id>/<slice-id>/`.
-12. The worker edits only `allowed_artifacts`; OpenAI workers use native tool calls through governed file/code/contract/search/math tools.
-13. Agent packets include only the team subcontract, current slice, direct dependency capsules, canonical substrate, required preflight tools, and compact skills.
-14. `QualityTransactionRunner` runs capsule/slice tests, then review checks whether the evidence is sufficient and whether worker claims stayed inside the contract. LOC/scale targets are quality signals, not promotion blockers.
-15. `TeamRuntime` promotes only owner artifacts and writes `.contractcoding/promotions/<run-id>/<slice-id>.json`.
-16. Final integration also runs as a `QualityTransaction`: `IntegrationJudge` checks required artifacts, compile/import, declared tests, kernel public paths, declared public behavior flows, canonical type ownership, semantic lint, and unresolved marked temporary mocks; review approves or routes the diagnostics.
-17. Final failures go to `RecoveryCoordinator`, not back to ordinary slice teams.
+1. `ProjectContract` is the global SSOT, mirrored from the legacy `PlanSpec`
+   for CLI compatibility.
+2. `TeamContract` contains each team's schedulable `TeamWorkItem`s, public
+   APIs, dependencies, decisions, and obligation references.
+3. Agents may only propose typed `ContractOperation`s. Free text may explain a
+   rationale, but it is not used for scheduling.
+4. `ContractAuditor` validates claims against registry state: files, capsule
+   existence, symbols, and validation evidence.
+5. `ContractReducer` accepts or rejects operations and is the only component
+   that mutates contract state.
+6. `TeamScheduler` derives `TeamWave`s from `ContractKernel`, blocking missing
+   dependencies and packing only non-conflicting work into the same wave.
+7. `ProjectCoordinator.run_once()` executes the first ready wave with bounded
+   parallelism, then turns worker verdicts into typed operations.
+8. Worker writes produce `ChangeSet` records. Compare-and-swap workspace writes
+   reject lost updates when another worker changes the same file after the base
+   read.
 
-## Repair And Replan
+This keeps cross-team coordination in typed contract state instead of natural
+language message streams.
 
-A repair transaction records:
+## Worker Pipeline
 
-- failure fingerprint
-- root kernel invariant
-- allowed artifacts
-- locked tests
-- validation commands
-- pre-patch artifact hashes
-- patch plan
-- expected behavior delta
-- last validation result
-- attempts and no-progress count
-- evidence
+The worker pipeline runs these stages:
 
-Repair runs in a team workspace copied from the main workspace. If exact validation fails, the patch is not promoted, so the main workspace remains unchanged.
+1. Inspector
+   Pulls declared capsule dependencies, cheap L1 neighboring capsule tags,
+   prior failures, and role-specific skills.
+2. Planner
+   Produces a bounded slice plan.
+3. Implementer
+   Writes artifacts to `workspace/<team>/` through `RegistryTool`.
+4. Reviewer
+   Independently reviews artifacts and updates reviewer memory.
+5. Validation
+   Optional smoke runner can attach fresh pass/fail evidence.
+6. Judge
+   Aggregates blockers, reviewer concerns, smoke result, and reviewer-memory
+   signals into an approve/reject verdict.
 
-If the same fingerprint repeats or repair produces no owned-file patch, the coordinator opens a targeted `ReplanRecord` for affected slices. If replan budget is exhausted or no legal owner can be found, the transaction becomes `HUMAN_REQUIRED`.
+Each pass should use a role-bound `RegistryTool` so progress entries and
+events carry accurate margin provenance.
 
-## Observability
+The pipeline executes a scheduled `TeamWorkItem`. Legacy `TaskItem` inputs are
+projected into work items during team activation so existing CLI JSON remains
+compatible.
 
-`monitor --json` includes:
+If a work item declares `writes`, the implementer may only write those files or
+paths below those declared prefixes. Out-of-bound artifacts become blockers and
+are not written.
 
-- run phase and status
-- ready wave
-- ready feature-team waves with internal parallel/serial mode
-- kernel acceptance/invariants/semantic invariants
-- slices and items
-- teams and team workspaces
-- team states, including locked capsules, ready items, active items, mailbox requests, and waiting capsules
-- team subcontracts and interface capsule versions/lock status
-- promotions
-- quality transactions with test evidence, review evidence, verdict, and diagnostics
-- repair transactions
-- replans
-- backend-neutral LLM telemetry
-- quality signals, including requested LOC target vs current observed LOC, without treating LOC as a hard gate
-- latest final diagnostics
+## Skill Loading
 
-The monitor intentionally does not render `API_KEY`, `BASE_URL`, or `API_VERSION` values.
+`ContractCoding.memory.skills` loads cards from
+`ContractCoding/knowledge/skills/*/SKILL.md`.
+
+Runtime frontmatter fields:
+
+```yaml
+name: planner-repo-survey
+description: Use when planning coding work that needs repository orientation.
+skill_id: planner_repo_survey
+title: Start from a repo map
+applicable_roles: planner
+tags: planning,context
+applicability: always
+```
+
+`runtime: false` keeps meta skills, authoring guidance, and reference-only
+skills out of worker packets.
+
+Inspector stores pulled fragments by role in `ContextPacket.skill_fragments_by_role`.
+Prompts should read only the current role's fragments.
+
+## Blocking Policy
+
+- Missing capsule dependencies become `ContractObligation`s and are blocked by
+  the scheduler before the worker runs.
+- Worker-local blockers stop the pipeline before Planner/Implementer.
+- Rejected tasks are marked `BLOCKED`, not left `ACTIVE`.
+- If artifacts are produced and validation is required, missing validation
+  evidence is a blocker.
+
+This keeps the runtime from converting incomplete context or unverified output
+into accepted work.
+
+## Registry Layout
+
+```text
+plan.json
+contract/project.json
+contract/teams/<team>.json
+contract/operations.jsonl
+contract/obligations.jsonl
+contract/schedule.jsonl
+contract/evidence.jsonl
+events.log
+capsules/<team>/<capability>.json
+ledgers/<team>/working_paper.json
+ledgers/<team>/task_ledger.json
+ledgers/<team>/progress_ledger.jsonl
+ledgers/<team>/failure_ledger.jsonl
+ledgers/<team>/reviewer_memory.json
+workspace/<team>/
+escalations/<id>.json
+```
+
+## Known Gaps
+
+- Workspace write policy currently ensures writes stay under the team
+  workspace; `TeamWorkItem.writes` and conflict keys are now available for
+  stricter task-level enforcement.
+- Validation evidence is typed and persisted, but real command execution
+  provenance can still become richer once external test runners are wired in.
+- Capsule reads still materialize full capsule objects internally. A stricter
+  layer-read API should eventually preserve L1/L2/L3 boundaries end to end.

@@ -1,3 +1,2 @@
-from ContractCoding.knowledge.manager import ContextManager, SkillRouter
+"""Progressive-disclosure knowledge assets for ContractCoding."""
 
-__all__ = ["ContextManager", "SkillRouter"]
